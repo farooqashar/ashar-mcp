@@ -1,0 +1,5 @@
+.venv/
+node_modules/
+__pycache__/
+scripts/.travel-bundle.mjs
+.vercel
