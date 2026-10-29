@@ -45,7 +45,7 @@ git commit -am "Refresh data" && git push   # Vercel redeploys
 
 ## Deploy (Vercel, free Hobby plan)
 
-1. Import this repo at vercel.com/new. There is no build step: `api/index.py` exposes the ASGI app and `vercel.json` routes every path to it.
+1. Import this repo at vercel.com/new. There is no build step: Vercel detects the ASGI `app` in `server.py` and installs `requirements.txt`.
 2. Optionally add the domain `mcp.asharfarooq.xyz` to the project.
 3. Check that it's live:
    ```bash
@@ -61,9 +61,8 @@ That is what serverless hosting needs.
 ## Layout
 
 ```
-server.py                  FastMCP server: tools, resources, ASGI `app`
-api/index.py               Vercel entrypoint (re-exports `app`)
-vercel.json                Routes every path to the function
+server.py                  FastMCP server: tools, resources, ASGI `app` (GET / = info, everything else = MCP)
+api/index.py               Alternate entrypoint (re-exports `app`)
 data/*.json                Generated data
 scripts/export-data.mjs    Regenerates data/ from the site repos
 ```

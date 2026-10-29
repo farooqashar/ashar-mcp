@@ -318,13 +318,36 @@ def things_done_dataset() -> dict:
 # ------------------------------------------------------------------- app ---
 
 # Stateless + JSON responses: every request stands alone, which is what serverless needs.
-app = mcp.http_app(stateless_http=True, json_response=True)
+mcp_app = mcp.http_app(stateless_http=True, json_response=True)
+
+_INFO = json.dumps(
+    {
+        "name": mcp.name,
+        "endpoint": "/mcp",
+        "transport": "streamable-http",
+        "about": "Read-only MCP server with Ashar Farooq's trips, travel trackers and Things Done.",
+        "source": "https://github.com/farooqashar/ashar-mcp",
+    }
+).encode()
+
+
+async def app(scope, receive, send):
+    """ASGI entrypoint (Vercel, uvicorn). GET / returns a small JSON description.
+    Every other path goes to the MCP endpoint, so /mcp, /mcp/ and whatever path a
+    host rewrites to all work."""
+    if scope["type"] == "http":
+        path = scope.get("path", "")
+        if path in ("", "/") and scope.get("method") == "GET":
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": _INFO})
+            return
+        if path != "/mcp":
+            scope = {**scope, "path": "/mcp", "raw_path": b"/mcp"}
+    await mcp_app(scope, receive, send)
+
 
 if __name__ == "__main__":
-    mcp.run(
-        transport="http",
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000)),
-        stateless_http=True,
-        json_response=True,
-    )
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
