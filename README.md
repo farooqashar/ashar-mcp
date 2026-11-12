@@ -35,13 +35,28 @@ To poke at it with the MCP Inspector, run `npx @modelcontextprotocol/inspector`,
 
 ## Update the data
 
-The JSON in `data/` is generated from the two site repos. After updating either site, refresh it:
+The JSON in `data/` is generated from the two site repos. To refresh it you need Node, the two
+site repos checked out next to this one, and the [GitHub CLI](https://cli.github.com) signed in
+(`gh auth login`) with push access to this repo. The script checks for `gh` before it does anything.
 
 ```bash
 npm install
-node scripts/export-data.mjs ../ashar-travel ../ashar-things-done
-git commit -am "Refresh data" && git push   # Vercel redeploys
+npm run refresh -- --pr
 ```
+
+This regenerates `data/*.json` from `../ashar-travel` and `../ashar-things-done` (override with
+`TRAVEL_REPO=… DONE_REPO=… npm run refresh -- --pr`) and compares it with `origin/main`:
+
+- **Nothing changed:** it says so and exits.
+- **Something changed:** it commits only the two data files on a fresh `data-refresh/<date>-<hash>`
+  branch cut from `origin/main` (your current branch and any other local changes are left alone),
+  pushes it and opens a PR labelled `data-refresh` with a one-line summary, e.g.
+  `trips 41→43, countries 52→55, Things Done entries +6`. If other `data-refresh` PRs are still
+  open, it lists them so you can close any this one replaces. `.github/release.yml` lists that label under **📦 Data refreshes** in the release notes.
+- **A previous run failed partway** (say the push or PR step): run it again. Same data gives the
+  same branch name, so it finishes that refresh instead of starting a new one.
+
+Merge the PR and Vercel redeploys. Without `--pr`, the script only rewrites `data/`.
 
 ## Deploy (Vercel, free Hobby plan)
 
