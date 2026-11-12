@@ -64,6 +64,23 @@ says so and exits. Without `--pr` it only rewrites `data/`.
 The server runs in stateless HTTP mode with JSON responses, so each request is self-contained.
 That is what serverless hosting needs.
 
+
+## Releases
+
+Release notes are on the [Releases page](https://github.com/farooqashar/ashar-mcp/releases).
+Changes go through labeled pull requests, and the labels group them in the generated notes (see `.github/release.yml`).
+
+To cut a release:
+
+```bash
+# bump __version__ in server.py via a PR, merge it, then:
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+The tag runs `.github/workflows/release.yml`. It fails before creating anything if the tag (minus the `v`)
+does not equal `server.__version__`, runs the smoke test (`python scripts/smoke_test.py`), then publishes
+the release with generated notes. Pull requests run the same smoke test in `.github/workflows/ci.yml`.
+
 ## Layout
 
 ```
@@ -71,4 +88,5 @@ server.py                  FastMCP server: tools, resources, ASGI `app` (GET / =
 api/index.py               Alternate entrypoint (re-exports `app`)
 data/*.json                Generated data
 scripts/export-data.mjs    Regenerates data/ from the site repos
+scripts/smoke_test.py      In-memory smoke test run by CI and the release workflow
 ```

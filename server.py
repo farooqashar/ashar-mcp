@@ -18,6 +18,8 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
+__version__ = "1.0.0"
+
 DATA_DIR = Path(__file__).parent / "data"
 TRAVEL_SITE = "https://ashar-travel.vercel.app"
 DONE_SITE = "https://done.asharfarooq.xyz"
@@ -38,6 +40,7 @@ COUNTRY_NAMES = {c["code"]: c["name"] for c in TRAVEL["countries"]}
 
 mcp = FastMCP(
     name="Ashar",
+    version=__version__,
     instructions=(
         "Facts about Ashar Farooq from his own public sites: trips he has taken, "
         "countries, cities and airports he has visited, his travel trackers "
@@ -323,6 +326,7 @@ mcp_app = mcp.http_app(stateless_http=True, json_response=True)
 _INFO = json.dumps(
     {
         "name": mcp.name,
+        "version": __version__,
         "endpoint": "/mcp",
         "transport": "streamable-http",
         "about": "Read-only MCP server with Ashar Farooq's trips, travel trackers and Things Done.",
