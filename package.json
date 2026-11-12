@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "refresh": "node scripts/export-data.mjs \"${TRAVEL_REPO:-../ashar-travel}\" \"${DONE_REPO:-../ashar-things-done}\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

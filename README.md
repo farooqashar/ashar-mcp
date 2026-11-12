@@ -39,9 +39,15 @@ The JSON in `data/` is generated from the two site repos. After updating either 
 
 ```bash
 npm install
-node scripts/export-data.mjs ../ashar-travel ../ashar-things-done
-git commit -am "Refresh data" && git push   # Vercel redeploys
+npm run refresh -- --pr
 ```
+
+This regenerates the JSON from `../ashar-travel` and `../ashar-things-done` (override with
+`TRAVEL_REPO=… DONE_REPO=… npm run refresh -- --pr`). If anything changed, it commits to a
+`data-refresh/YYYY-MM-DD` branch, pushes it and opens a PR labelled `data-refresh` with a one-line
+summary (e.g. `trips 41→43, countries 52→55, Things Done entries +6`), so the refresh shows up under
+**📦 Data refreshes** in the release notes. Merge it and Vercel redeploys. If nothing changed, it
+says so and exits. Without `--pr` it only rewrites `data/`.
 
 ## Deploy (Vercel, free Hobby plan)
 
