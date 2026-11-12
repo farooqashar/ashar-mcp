@@ -58,6 +58,18 @@ git commit -am "Refresh data" && git push   # Vercel redeploys
 The server runs in stateless HTTP mode with JSON responses, so each request is self-contained.
 That is what serverless hosting needs.
 
+## Versioning
+
+The server follows [semver](https://semver.org). `__version__` in `server.py` is the single source:
+MCP clients see it as `serverInfo.version` on `initialize`, and `GET /` returns it as `"version"`.
+Whether a change is major, minor or patch is judged by what an MCP client sees:
+
+| Bump | When | PR label |
+|---|---|---|
+| **Major** | A tool, parameter or resource is removed or renamed, or a return shape changes incompatibly | `breaking` |
+| **Minor** | A new tool or resource, or a new optional parameter | `new-tool` |
+| **Patch** | Bug fixes and data refreshes | `bug` / `data-refresh` |
+
 ## Layout
 
 ```
