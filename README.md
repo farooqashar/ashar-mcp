@@ -58,6 +58,11 @@ git commit -am "Refresh data" && git push   # Vercel redeploys
 The server runs in stateless HTTP mode with JSON responses, so each request is self-contained.
 That is what serverless hosting needs.
 
+## Releases
+
+Release notes are on the [Releases page](https://github.com/farooqashar/ashar-mcp/releases).
+Changes go through labeled pull requests, and the labels group them in the generated notes (see `.github/release.yml`).
+
 ## Layout
 
 ```
