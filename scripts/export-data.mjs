@@ -116,12 +116,15 @@ if (!openPr) process.exit(0);
 // never touched or pushed. The branch name includes a hash of the data, so re-running
 // after a failed push or PR step finishes the same refresh instead of starting over.
 const FILES = ["data/travel.json", "data/things-done.json"];
-const remoteBase = `origin/${base}`;
-git("fetch", "--quiet", "origin", base);
+// Compare against, and branch from, the exact commit just fetched (not a remote-tracking
+// ref, which may be missing or stale in a narrowed or single-branch clone).
+git("fetch", "--quiet", "origin", `refs/heads/${base}`);
+const baseSha = git("rev-parse", "FETCH_HEAD^{commit}").trim();
+const remoteBase = `origin/${base}`; // for messages only
 
 const atBase = (file) => {
   try {
-    return git("show", `${remoteBase}:${file}`);
+    return git("show", `${baseSha}:${file}`);
   } catch {
     return null;
   }
@@ -159,7 +162,7 @@ const title = `Refresh data (${date})`;
 // Commit just the data files on top of the remote base, in a temporary worktree.
 const tree = mkdtempSync(join(tmpdir(), "ashar-mcp-refresh-"));
 try {
-  git("worktree", "add", "--quiet", "--detach", tree, remoteBase);
+  git("worktree", "add", "--quiet", "--detach", tree, baseSha);
   for (const f of FILES) writeFileSync(join(tree, f), generated[f]);
   sh(tree, "git", "add", "--", ...FILES);
   sh(tree, "git", "commit", "--quiet", "-m", title, "-m", summary);
@@ -184,11 +187,12 @@ if (pr) {
   const url = gh("pr", "create", "--base", base, "--head", branch, "--label", "data-refresh",
     "--title", title, "--body", summary).trim();
   console.log(url);
-  // Close older refresh PRs: this one contains everything they did and more.
-  for (const old of prs("--label", "data-refresh")) {
-    if (old.headRefName === branch) continue;
-    gh("pr", "close", String(old.number), "--delete-branch", "--comment", `Superseded by ${url}`);
-    console.log(`closed superseded PR #${old.number}`);
+  // Don't close anything automatically: just point out other open refresh PRs so you can
+  // decide whether this one replaces them.
+  const others = prs("--label", "data-refresh").filter((o) => o.headRefName !== branch);
+  if (others.length) {
+    console.log("Other open data-refresh PRs (close them yourself if this one replaces them):");
+    for (const o of others) console.log(`  #${o.number} ${o.url}`);
   }
 }
 console.log(summary);

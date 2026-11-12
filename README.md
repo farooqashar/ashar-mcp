@@ -51,8 +51,8 @@ This regenerates `data/*.json` from `../ashar-travel` and `../ashar-things-done`
 - **Something changed:** it commits only the two data files on a fresh `data-refresh/<date>-<hash>`
   branch cut from `origin/main` (your current branch and any other local changes are left alone),
   pushes it and opens a PR labelled `data-refresh` with a one-line summary, e.g.
-  `trips 41→43, countries 52→55, Things Done entries +6`. Any older open refresh PR is closed as
-  superseded. `.github/release.yml` lists that label under **📦 Data refreshes** in the release notes.
+  `trips 41→43, countries 52→55, Things Done entries +6`. If other `data-refresh` PRs are still
+  open, it lists them so you can close any this one replaces. `.github/release.yml` lists that label under **📦 Data refreshes** in the release notes.
 - **A previous run failed partway** (say the push or PR step): run it again. Same data gives the
   same branch name, so it finishes that refresh instead of starting a new one.
 
