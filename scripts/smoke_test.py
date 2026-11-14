@@ -1,4 +1,5 @@
-"""Smoke test: every tool in the README table is served, and three of them run.
+"""Smoke test: every tool in the README table is served, a few of them run, and
+country lookups resolve to the right country.
 
 Uses FastMCP's in-memory client, so no server or network is needed.
 Run from the repo root:   python scripts/smoke_test.py
@@ -29,6 +30,37 @@ def readme_tools() -> set[str]:
     return names
 
 
+async def call(client: Client, tool: str, args: dict) -> dict:
+    return (await client.call_tool(tool, args)).structured_content
+
+
+async def check_country_lookup(client: Client) -> None:
+    """Exact names, ISO codes and common aliases hit the right country; substrings don't."""
+    oman = await call(client, "has_visited", {"place": "Oman"})
+    assert not oman["visited"], f"Oman should not be visited: {oman['matches']}"
+
+    for place, country in [
+        ("Japan", "Japan"), ("JP", "Japan"), ("South Korea", "South Korea"),
+        ("UK", "United Kingdom"), ("England", "United Kingdom"), ("USA", "United States"),
+        ("UAE", "United Arab Emirates"), ("Turkey", "Türkiye"), ("Czech Republic", "Czechia"),
+    ]:
+        res = await call(client, "has_visited", {"place": place})
+        countries = [m["name"] for m in res["matches"] if m["type"] == "country"]
+        assert countries == [country], f"has_visited({place!r}) countries: {countries}"
+        if place == "UK":
+            names = [m["name"] for m in res["matches"]]
+            assert not any("Montauk" in n or "Phuket" in n for n in names), names
+
+    in_ = await call(client, "has_visited", {"place": "in"})
+    assert not any(m["type"] == "country" for m in in_["matches"]), in_["matches"]
+
+    oman_cities = await call(client, "list_places", {"kind": "cities", "country": "Oman"})
+    assert oman_cities["items"] == [], oman_cities
+    uk_cities = await call(client, "list_places", {"kind": "cities", "country": "UK"})
+    assert uk_cities["items"] and all(i.endswith(", United Kingdom") for i in uk_cities["items"]), uk_cities
+    assert await call(client, "list_trips", {"country": "Oman"}) == {"result": []}
+
+
 async def main() -> None:
     expected = readme_tools()
     assert expected, "no tools found in the README Tools table"
@@ -41,7 +73,8 @@ async def main() -> None:
         for kind in ("cities", "airports"):
             unknown = await client.call_tool("list_places", {"kind": kind, "country": "Narnia"})
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
-    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran")
+        await check_country_lookup(client)
+    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; country lookups resolve")
 
 
 if __name__ == "__main__":

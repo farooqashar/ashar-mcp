@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -58,18 +59,39 @@ def _norm(s: str) -> str:
     return s.strip().lower()
 
 
+# Common names that differ from the dataset's country names, keyed by _norm() form.
+COUNTRY_ALIASES = {
+    **dict.fromkeys(["usa", "u.s.", "u.s.a.", "america", "united states of america"], "US"),
+    **dict.fromkeys(["uk", "u.k.", "england", "scotland", "wales", "great britain", "britain"], "GB"),
+    **dict.fromkeys(["uae", "emirates"], "AE"),
+    **dict.fromkeys(["turkey", "turkiye"], "TR"),
+    **dict.fromkeys(["czech republic"], "CZ"),
+    **dict.fromkeys(["holland"], "NL"),
+    **dict.fromkeys(["korea"], "KR"),
+}
+
+
+def _word_match(q: str, text: str) -> bool:
+    """True if q appears in text as whole words ("uk" is not in "montauk")."""
+    return re.search(rf"(?<!\w){re.escape(q)}(?!\w)", _norm(text)) is not None
+
+
 def _country_code(query: str) -> str | None:
-    """Accept a 2-letter code or a country name (case-insensitive, partial ok)."""
+    """Accept a 2-letter code, a country name or a common alias (case-insensitive).
+    A partial name only counts if it starts a word of exactly one country name."""
     q = _norm(query)
     if len(q) == 2 and q.upper() in COUNTRY_NAMES:
         return q.upper()
     for code, name in COUNTRY_NAMES.items():
         if _norm(name) == q:
             return code
-    for code, name in COUNTRY_NAMES.items():
-        if q in _norm(name):
-            return code
-    return None
+    if q in COUNTRY_ALIASES:
+        return COUNTRY_ALIASES[q]
+    if len(q) < 3:
+        return None
+    prefix = re.compile(rf"(?<!\w){re.escape(q)}")
+    hits = [code for code, name in COUNTRY_NAMES.items() if prefix.search(_norm(name))]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _trip_view(t: dict, detail: bool = False) -> dict:
@@ -184,19 +206,19 @@ def has_visited(place: Annotated[str, Field(description="A country, city or airp
     if code and any(c["code"] == code and c.get("visited") for c in TRAVEL["countries"]):
         result["matches"].append({"type": "country", "name": COUNTRY_NAMES[code]})
     for city in TRAVEL["cities"]:
-        if q in _norm(city["name"]):
+        if _word_match(q, city["name"]):
             result["matches"].append(
                 {"type": "city", "name": city["name"], "country": COUNTRY_NAMES.get(city["countryCode"])}
             )
     for ap in TRAVEL["airports"]:
-        if q == _norm(ap["code"]) or q in _norm(ap["name"]):
+        if q == _norm(ap["code"]) or _word_match(q, ap["name"]):
             result["matches"].append({"type": "airport", "name": f"{ap['name']} ({ap['code']})", "city": ap["city"]})
 
     trips = [
         t for t in TRAVEL["trips"]
         if (code and code in t.get("countries", []))
-        or q in _norm(t["name"]) or q in _norm(t.get("description", ""))
-        or any(q in _norm(c) for c in t.get("cities", []))
+        or _word_match(q, t["name"]) or _word_match(q, t.get("description", ""))
+        or any(_word_match(q, c) for c in t.get("cities", []))
     ]
     result["trips"] = [_trip_view(t) for t in sorted(trips, key=lambda t: t["startDate"], reverse=True)]
     result["visited"] = bool(result["matches"])
