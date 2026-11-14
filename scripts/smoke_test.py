@@ -1,4 +1,4 @@
-"""Smoke test: every tool in the README table is served, and two of them run.
+"""Smoke test: every tool in the README table is served, and three of them run.
 
 Uses FastMCP's in-memory client, so no server or network is needed.
 Run from the repo root:   python scripts/smoke_test.py
@@ -38,7 +38,10 @@ async def main() -> None:
         assert not missing, f"tools in README but not served: {sorted(missing)}"
         await client.call_tool("about_ashar", {})
         await client.call_tool("has_visited", {"place": "Japan"})
-    print(f"ok: {len(expected)} README tools served; about_ashar and has_visited ran")
+        for kind in ("cities", "airports"):
+            unknown = await client.call_tool("list_places", {"kind": kind, "country": "Narnia"})
+            assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
+    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran")
 
 
 if __name__ == "__main__":

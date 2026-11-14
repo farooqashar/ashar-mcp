@@ -212,6 +212,8 @@ def list_places(
     if kind not in ("cities", "airports"):
         raise ValueError("kind must be 'cities' or 'airports'")
     code = _country_code(country) if country else None
+    if country and not code:
+        return {"kind": kind, "count": 0, "items": []}
     rows = [r for r in TRAVEL[kind] if code is None or r["countryCode"] == code]
     if kind == "cities":
         items = sorted(f"{r['name']}, {COUNTRY_NAMES.get(r['countryCode'], r['countryCode'])}" for r in rows)
