@@ -61,6 +61,23 @@ async def check_country_lookup(client: Client) -> None:
     assert await call(client, "list_trips", {"country": "Oman"}) == {"result": []}
 
 
+async def check_search(client: Client) -> None:
+    """search_everything finds trips by country name and ignores JSON keys."""
+    japan = await call(client, "search_everything", {"query": "Japan"})
+    assert "trip-4" in [t["id"] for t in japan["trips"]], japan["trips"]
+    assert "Tokyo" in japan["cities"], japan["cities"]
+
+    trips, airports = len(server.TRAVEL["trips"]), len(server.TRAVEL["airports"])
+    for key in ("name", "id", "photos", "startDate", "lat"):
+        res = await call(client, "search_everything", {"query": key})
+        assert len(res["trips"]) < trips and len(res["airports"]) < airports, (
+            f"search_everything({key!r}) matched every trip or airport"
+        )
+
+    houston = await call(client, "search_everything", {"query": "Houston"})
+    assert houston["trips"] and "Houston" in houston["cities"], houston
+
+
 async def main() -> None:
     expected = readme_tools()
     assert expected, "no tools found in the README Tools table"
@@ -74,7 +91,8 @@ async def main() -> None:
             unknown = await client.call_tool("list_places", {"kind": kind, "country": "Narnia"})
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
         await check_country_lookup(client)
-    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; country lookups resolve")
+        await check_search(client)
+    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; country lookups and search resolve")
 
 
 if __name__ == "__main__":
