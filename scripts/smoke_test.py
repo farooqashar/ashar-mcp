@@ -62,6 +62,23 @@ async def check_country_lookup(client: Client) -> None:
     assert await call(client, "list_trips", {"country": "Oman"}) == {"result": []}
 
 
+async def check_search(client: Client) -> None:
+    """search_everything finds trips by country name and ignores JSON keys."""
+    japan = await call(client, "search_everything", {"query": "Japan"})
+    assert "trip-4" in [t["id"] for t in japan["trips"]], japan["trips"]
+    assert "Tokyo" in japan["cities"], japan["cities"]
+
+    trips, airports = len(server.TRAVEL["trips"]), len(server.TRAVEL["airports"])
+    for key in ("name", "id", "photos", "startDate", "lat"):
+        res = await call(client, "search_everything", {"query": key})
+        assert len(res["trips"]) < trips and len(res["airports"]) < airports, (
+            f"search_everything({key!r}) matched every trip or airport"
+        )
+
+    houston = await call(client, "search_everything", {"query": "Houston"})
+    assert houston["trips"] and "Houston" in houston["cities"], houston
+
+
 async def main() -> None:
     expected = readme_tools()
     assert expected, "no tools found in the README Tools table"
@@ -75,10 +92,11 @@ async def main() -> None:
             unknown = await client.call_tool("list_places", {"kind": kind, "country": "Narnia"})
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
         await check_country_lookup(client)
+        await check_search(client)
         if not os.environ.get("MONGODB_URI"):
             notes = await call(client, "ask_notes", {"question": "coding agents"})
             assert notes["results"] == [] and "MONGODB_URI is not set" in notes["error"], notes
-    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited, list_places and ask_notes ran; country lookups resolve")
+    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited, list_places and ask_notes ran; country lookups and search resolve")
 
 
 if __name__ == "__main__":
