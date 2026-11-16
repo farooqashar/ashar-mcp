@@ -6,6 +6,7 @@ Run from the repo root:   python scripts/smoke_test.py
 """
 
 import asyncio
+import os
 import re
 import sys
 from pathlib import Path
@@ -74,7 +75,10 @@ async def main() -> None:
             unknown = await client.call_tool("list_places", {"kind": kind, "country": "Narnia"})
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
         await check_country_lookup(client)
-    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; country lookups resolve")
+        if not os.environ.get("MONGODB_URI"):
+            notes = await call(client, "ask_notes", {"question": "coding agents"})
+            assert notes["results"] == [] and "MONGODB_URI is not set" in notes["error"], notes
+    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited, list_places and ask_notes ran; country lookups resolve")
 
 
 if __name__ == "__main__":

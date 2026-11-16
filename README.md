@@ -20,8 +20,24 @@ All of its data is already public on [ashar-travel.vercel.app](https://ashar-tra
 | `things_done(year?, month?, query?)` | The month-by-month accomplishments log since 2017 |
 | `life_highlights()` | Major life happenings, hackathons, conferences, fun facts |
 | `search_everything(query)` | Keyword search across all of the above |
+| `ask_notes(question, folder?, limit?)` | Semantic search over my Obsidian vault of web clippings, returning the most relevant passages with source links (see [Notes search](#notes-search)) |
 
 The full datasets are also exposed as resources: `ashar://travel.json` and `ashar://things-done.json`.
+
+## Notes search
+
+`ask_notes` searches my [Obsidian vault](https://github.com/farooqashar/ashar-obsidian-vault)
+(public web clippings) by meaning rather than keywords.
+
+- The vault's `.github/scripts/ingest_notes.py` splits each note into chunks and syncs them into
+  MongoDB Atlas (`vault.notes`) on every push. Only changed chunks are rewritten.
+- Atlas [Automated Embedding](https://www.mongodb.com/docs/vector-search/crud-embeddings/automated-embedding/)
+  embeds them with Voyage AI `voyage-4` through the `notes_vector` index, which the ingest script creates.
+- This server sends the question as plain text in a `$vectorSearch` query; Atlas embeds it and
+  returns the closest passages. The Claude calling the tool writes the answer.
+
+Set `MONGODB_URI` (the Atlas connection string) wherever the server runs. Without it, `ask_notes`
+returns a "not configured" message and every other tool works as before.
 
 ## Run locally
 
