@@ -369,6 +369,9 @@ NOTE_FOLDERS = [
     "Reading", "NYC-Local", "Misc", "Clippings",
 ]
 _notes_client = None
+# Finite bounds so a slow or hung Atlas can't stall a (serverless) request. timeoutMS caps each
+# whole operation, including server selection, connection checkout, retries and reading the reply.
+NOTES_TIMEOUT_MS = 10_000
 
 
 def _notes():
@@ -381,7 +384,13 @@ def _notes():
     if _notes_client is None:
         from pymongo import MongoClient
 
-        _notes_client = MongoClient(uri, appname="ashar-mcp", serverSelectionTimeoutMS=8000)
+        _notes_client = MongoClient(
+            uri,
+            appname="ashar-mcp",
+            timeoutMS=NOTES_TIMEOUT_MS,
+            serverSelectionTimeoutMS=5_000,
+            connectTimeoutMS=5_000,
+        )
     return _notes_client[NOTES_DB][NOTES_COLLECTION]
 
 
@@ -395,14 +404,13 @@ def ask_notes(
     he saved about AI agents, companies and products, infra/DevOps, things he's reading, NYC
     and curiosities. Returns the most relevant passages with their note titles, source URLs
     and links, so you can answer from them and cite which notes you used."""
-    coll = _notes()
-    if coll is None:
+    if not os.environ.get("MONGODB_URI"):
         return {"error": "Notes search isn't configured on this server (MONGODB_URI is not set).", "results": []}
 
     search: dict[str, Any] = {
         "index": NOTES_INDEX,
         "path": "text",
-        "query": question,
+        "query": {"text": question},  # Automated Embedding: Atlas embeds query.text with the index's model
         "numCandidates": limit * 20,
         "limit": limit,
     }
@@ -411,12 +419,13 @@ def ask_notes(
         search["filter"] = {"folder": {"$eq": match}}
 
     try:
+        coll = _notes()  # inside the try: a malformed MONGODB_URI raises here
         hits = list(coll.aggregate([
             {"$vectorSearch": search},
             {"$project": {"_id": 0, "path": 1, "title": 1, "folder": 1, "heading": 1,
                           "source": 1, "tags": 1, "text": 1, "score": {"$meta": "vectorSearchScore"}}},
         ]))
-    except Exception as e:  # network, auth, index still building, rate limit
+    except Exception as e:  # bad URI, network, timeout, auth, index still building, rate limit
         return {"error": f"Notes search failed: {type(e).__name__}: {e}", "results": []}
 
     from urllib.parse import quote

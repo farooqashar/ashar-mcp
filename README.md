@@ -33,8 +33,10 @@ The full datasets are also exposed as resources: `ashar://travel.json` and `asha
   MongoDB Atlas (`vault.notes`) on every push. Only changed chunks are rewritten.
 - Atlas [Automated Embedding](https://www.mongodb.com/docs/vector-search/crud-embeddings/automated-embedding/)
   embeds them with Voyage AI `voyage-4` through the `notes_vector` index, which the ingest script creates.
-- This server sends the question as plain text in a `$vectorSearch` query; Atlas embeds it and
-  returns the closest passages. The Claude calling the tool writes the answer.
+- This server sends the question as plain text (`query: {text: ...}`) in a `$vectorSearch` query;
+  Atlas embeds it and returns the closest passages. The Claude calling the tool writes the answer.
+- Mongo calls are capped at 10 seconds (`timeoutMS`), so a slow cluster returns an `error` instead
+  of hanging the request.
 
 Set `MONGODB_URI` (the Atlas connection string) wherever the server runs. Without it, `ask_notes`
 returns a "not configured" message and every other tool works as before.
