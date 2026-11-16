@@ -316,17 +316,39 @@ def life_highlights() -> dict:
 def search_everything(query: Annotated[str, Field(description="Keyword or phrase")]) -> dict:
     """Keyword search across trips, places, trackers and Things Done in one call."""
     q = _norm(query)
-    blob = lambda x: q in _norm(json.dumps(x, ensure_ascii=False))
+    code = _country_code(query)
+    country = lambda c: COUNTRY_NAMES.get(c, c)
+    # Match readable values only, never JSON keys, ids or photo paths.
+    hit = lambda *texts: any(q in _norm(t) for t in texts if isinstance(t, str))
+
+    def trip_hit(t: dict) -> bool:
+        countries = t.get("countries", [])
+        return (code in countries) or hit(
+            t["name"], t.get("description"), *t.get("cities", []), *map(country, countries)
+        )
+
+    def place_hit(p: dict, *texts: str) -> bool:
+        return p["countryCode"] == code or hit(*texts, country(p["countryCode"]))
+
+    def tracker_hit(c: dict) -> bool:
+        data = c.get("data") or {}
+        items = data.get("visited", []) + data.get("remaining", [])
+        return hit(c["name"], c.get("description"), *map(_item_label, items))
+
     return {
-        "trips": [_trip_view(t) for t in TRAVEL["trips"] if blob(t)],
-        "cities": [c["name"] for c in TRAVEL["cities"] if q in _norm(c["name"])],
-        "airports": [f"{a['code']} – {a['name']}" for a in TRAVEL["airports"] if blob(a)],
-        "trackers": [c["name"] for c in TRAVEL["challenges"] if blob(c)],
+        "trips": [_trip_view(t) for t in TRAVEL["trips"] if trip_hit(t)],
+        "cities": [c["name"] for c in TRAVEL["cities"] if place_hit(c, c["name"])],
+        "airports": [
+            f"{a['code']} – {a['name']}"
+            for a in TRAVEL["airports"]
+            if place_hit(a, a["code"], a["name"], a["city"])
+        ],
+        "trackers": [c["name"] for c in TRAVEL["challenges"] if tracker_hit(c)],
         "thingsDone": [
             {"year": y, "month": m, "entry": t} for y, m, t in _done_entries() if q in _norm(t)
         ][:50],
         "lifeHighlights": [x for k in ("lifeHappenings", "funFacts") for x in DONE[k] if q in _norm(x)]
-        + [e for k in ("hackathons", "conferences") for g in DONE[k] for e in g["events"] if blob(e)],
+        + [e for k in ("hackathons", "conferences") for g in DONE[k] for e in g["events"] if hit(*e.values())],
     }
 
 
