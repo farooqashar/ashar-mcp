@@ -47,6 +47,8 @@ mcp = FastMCP(
         "countries, cities and airports he has visited, his travel trackers "
         "(continents, wonders, US states and similar challenges), and 'Things Done', "
         "a month-by-month log of accomplishments and life events since 2017. "
+        "ask_notes searches his Obsidian vault of saved web clippings (AI agents, companies, "
+        "infra, reading) by meaning. "
         "Start with about_ashar for an overview, or search_everything for a keyword. "
         "Everything here is read-only."
     ),
@@ -352,6 +354,100 @@ def search_everything(query: Annotated[str, Field(description="Keyword or phrase
     }
 
 
+# ------------------------------------------------------------ notes search ---
+# Ashar's Obsidian vault (public web clippings) lives in MongoDB Atlas, kept in sync by
+# .github/scripts/ingest_notes.py in github.com/farooqashar/ashar-obsidian-vault.
+# Atlas Automated Embedding (voyage-4) embeds both the notes and the question, so this
+# server only sends text. Needs the MONGODB_URI environment variable.
+
+VAULT_REPO = "https://github.com/farooqashar/ashar-obsidian-vault"
+NOTES_DB = os.environ.get("NOTES_DB", "vault")
+NOTES_COLLECTION = os.environ.get("NOTES_COLLECTION", "notes")
+NOTES_INDEX = "notes_vector"
+NOTE_FOLDERS = [
+    "AI-Agents", "Companies-Products", "Infra-DevOps", "Fun-Curiosities",
+    "Reading", "NYC-Local", "Misc", "Clippings",
+]
+_notes_client = None
+# Finite bounds so a slow or hung Atlas can't stall a (serverless) request. timeoutMS caps each
+# whole operation, including server selection, connection checkout, retries and reading the reply.
+NOTES_TIMEOUT_MS = 10_000
+
+
+def _notes():
+    """The notes collection, or None when MONGODB_URI isn't configured. The client is
+    created once per process and reused across requests (and warm serverless calls)."""
+    global _notes_client
+    uri = os.environ.get("MONGODB_URI")
+    if not uri:
+        return None
+    if _notes_client is None:
+        from pymongo import MongoClient
+
+        _notes_client = MongoClient(
+            uri,
+            appname="ashar-mcp",
+            timeoutMS=NOTES_TIMEOUT_MS,
+            serverSelectionTimeoutMS=5_000,
+            connectTimeoutMS=5_000,
+        )
+    return _notes_client[NOTES_DB][NOTES_COLLECTION]
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def ask_notes(
+    question: Annotated[str, Field(description="What to look for, in plain language, e.g. 'tools for running coding agents in the cloud'")],
+    folder: Annotated[str | None, Field(description=f"Only search one folder: {', '.join(NOTE_FOLDERS)}")] = None,
+    limit: Annotated[int, Field(ge=1, le=10, description="How many passages to return")] = 5,
+) -> dict:
+    """Search Ashar's Obsidian vault by meaning, not just keywords. The vault is web clippings
+    he saved about AI agents, companies and products, infra/DevOps, things he's reading, NYC
+    and curiosities. Returns the most relevant passages with their note titles, source URLs
+    and links, so you can answer from them and cite which notes you used."""
+    if not os.environ.get("MONGODB_URI"):
+        return {"error": "Notes search isn't configured on this server (MONGODB_URI is not set).", "results": []}
+
+    search: dict[str, Any] = {
+        "index": NOTES_INDEX,
+        "path": "text",
+        "query": {"text": question},  # Automated Embedding: Atlas embeds query.text with the index's model
+        "numCandidates": limit * 20,
+        "limit": limit,
+    }
+    if folder:
+        match = next((f for f in NOTE_FOLDERS if _norm(f) == _norm(folder)), folder)
+        search["filter"] = {"folder": {"$eq": match}}
+
+    try:
+        coll = _notes()  # inside the try: a malformed MONGODB_URI raises here
+        hits = list(coll.aggregate([
+            {"$vectorSearch": search},
+            {"$project": {"_id": 0, "path": 1, "title": 1, "folder": 1, "heading": 1,
+                          "source": 1, "tags": 1, "text": 1, "score": {"$meta": "vectorSearchScore"}}},
+        ]))
+    except Exception as e:  # bad URI, network, timeout, auth, index still building, rate limit
+        return {"error": f"Notes search failed: {type(e).__name__}: {e}", "results": []}
+
+    from urllib.parse import quote
+
+    return {
+        "question": question,
+        "results": [
+            {
+                "title": h.get("title"),
+                "section": h.get("heading") or None,
+                "folder": h.get("folder"),
+                "tags": [t for t in h.get("tags") or [] if t != "clippings"],
+                "score": round(h.get("score", 0), 3),
+                "source": h.get("source"),
+                "note": f"{VAULT_REPO}/blob/main/{quote(h['path'])}",
+                "text": h.get("text", "")[:3000],
+            }
+            for h in hits
+        ],
+    }
+
+
 @mcp.resource("ashar://travel.json", mime_type="application/json")
 def travel_dataset() -> dict:
     """The full travel dataset behind the travel site."""
@@ -375,7 +471,7 @@ _INFO = json.dumps(
         "version": __version__,
         "endpoint": "/mcp",
         "transport": "streamable-http",
-        "about": "Read-only MCP server with Ashar Farooq's trips, travel trackers and Things Done.",
+        "about": "Read-only MCP server with Ashar Farooq's trips, travel trackers, Things Done and notes search.",
         "source": "https://github.com/farooqashar/ashar-mcp",
     }
 ).encode()

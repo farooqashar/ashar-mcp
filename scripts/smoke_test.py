@@ -6,6 +6,7 @@ Run from the repo root:   python scripts/smoke_test.py
 """
 
 import asyncio
+import os
 import re
 import sys
 from pathlib import Path
@@ -78,6 +79,51 @@ async def check_search(client: Client) -> None:
     assert houston["trips"] and "Houston" in houston["cities"], houston
 
 
+class _FakeNotes:
+    """Stands in for the Atlas collection: records the pipeline, returns one canned hit."""
+
+    def __init__(self) -> None:
+        self.pipeline: list = []
+
+    def aggregate(self, pipeline: list) -> list:
+        self.pipeline = pipeline
+        return [{"path": "AI-Agents/Agents in the cloud.md", "title": "Agents in the cloud",
+                 "folder": "AI-Agents", "heading": "Setup", "source": "https://example.com/a",
+                 "tags": ["clippings", "agents"], "text": "Run coding agents remotely.", "score": 0.91234}]
+
+
+async def check_ask_notes(client: Client) -> str:
+    """ask_notes without Atlas: the unconfigured and bad-URI error shapes, and the query it builds.
+    Skipped when MONGODB_URI is set, so the test never talks to a real cluster. Returns a summary."""
+    if os.environ.get("MONGODB_URI"):
+        return "ask_notes SKIPPED (MONGODB_URI is set; this test does not touch a real cluster)"
+
+    notes = await call(client, "ask_notes", {"question": "coding agents"})
+    assert notes["results"] == [] and "MONGODB_URI is not set" in notes["error"], notes
+
+    real_notes = server._notes
+    try:
+        # A malformed URI fails while building the client; that must come back as an error field.
+        os.environ["MONGODB_URI"] = "mongodb://"
+        notes = await call(client, "ask_notes", {"question": "coding agents"})
+        assert notes["results"] == [] and "InvalidURI" in notes["error"], notes
+
+        fake = _FakeNotes()
+        server._notes = lambda: fake
+        notes = await call(client, "ask_notes", {"question": "coding agents", "folder": "ai-agents", "limit": 3})
+        search = fake.pipeline[0]["$vectorSearch"]
+        assert search["query"] == {"text": "coding agents"}, search
+        assert search["filter"] == {"folder": {"$eq": "AI-Agents"}} and search["limit"] == 3, search
+        hit = notes["results"][0]
+        assert hit["tags"] == ["agents"] and hit["score"] == 0.912, hit
+        assert hit["note"].endswith("/AI-Agents/Agents%20in%20the%20cloud.md"), hit
+    finally:
+        os.environ.pop("MONGODB_URI", None)
+        server._notes = real_notes
+        server._notes_client = None
+    return "ask_notes ran (unconfigured, bad URI and query shape against a fake collection)"
+
+
 async def main() -> None:
     expected = readme_tools()
     assert expected, "no tools found in the README Tools table"
@@ -92,7 +138,11 @@ async def main() -> None:
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
         await check_country_lookup(client)
         await check_search(client)
-    print(f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; country lookups and search resolve")
+        notes_checked = await check_ask_notes(client)
+    print(
+        f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; "
+        f"country lookups and search resolve; {notes_checked}"
+    )
 
 
 if __name__ == "__main__":
