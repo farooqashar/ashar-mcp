@@ -63,7 +63,8 @@ async def check_country_lookup(client: Client) -> None:
 
 
 async def check_search(client: Client) -> None:
-    """search_everything finds trips by country name and ignores JSON keys."""
+    """search_everything finds trips by country name, ignores JSON keys, and returns the
+    newest 50 Things Done matches with their total."""
     japan = await call(client, "search_everything", {"query": "Japan"})
     assert "trip-4" in [t["id"] for t in japan["trips"]], japan["trips"]
     assert "Tokyo" in japan["cities"], japan["cities"]
@@ -77,6 +78,16 @@ async def check_search(client: Client) -> None:
 
     houston = await call(client, "search_everything", {"query": "Houston"})
     assert houston["trips"] and "Houston" in houston["cities"], houston
+
+    common = await call(client, "search_everything", {"query": "and"})
+    matches = [y for y, _, t in server._done_entries() if "and" in server._norm(t)]
+    assert len(matches) > 50, f"expected more than 50 Things Done matches for 'and', got {len(matches)}"
+    assert len(common["thingsDone"]) == 50, len(common["thingsDone"])
+    years = [e["year"] for e in common["thingsDone"]]
+    assert years[0] == max(matches) and years == sorted(years, reverse=True), years
+    assert common["thingsDoneTotal"] == len(matches), common["thingsDoneTotal"]
+    assert common["thingsDoneTruncated"] is True, common
+    assert houston["thingsDoneTotal"] < 50 and houston["thingsDoneTruncated"] is False, houston
 
 
 class _FakeNotes:
