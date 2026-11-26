@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -372,6 +373,13 @@ _notes_client = None
 # Finite bounds so a slow or hung Atlas can't stall a (serverless) request. timeoutMS caps each
 # whole operation, including server selection, connection checkout, retries and reading the reply.
 NOTES_TIMEOUT_MS = 10_000
+# Atlas embeds every question with Voyage AI, so cap its size; the server has no auth.
+QUESTION_MAX_CHARS = 1_000
+
+
+def _folder_key(s: str) -> str:
+    """Folder names compared without case, spaces or punctuation: 'ai agents' == 'AI-Agents'."""
+    return re.sub(r"[\W_]+", "", s.lower())
 
 
 def _notes():
@@ -396,7 +404,7 @@ def _notes():
 
 @mcp.tool(annotations={"readOnlyHint": True})
 def ask_notes(
-    question: Annotated[str, Field(description="What to look for, in plain language, e.g. 'tools for running coding agents in the cloud'")],
+    question: Annotated[str, Field(description=f"What to look for, in plain language (up to {QUESTION_MAX_CHARS} characters), e.g. 'tools for running coding agents in the cloud'")],
     folder: Annotated[str | None, Field(description=f"Only search one folder: {', '.join(NOTE_FOLDERS)}")] = None,
     limit: Annotated[int, Field(ge=1, le=10, description="How many passages to return")] = 5,
 ) -> dict:
@@ -404,6 +412,17 @@ def ask_notes(
     he saved about AI agents, companies and products, infra/DevOps, things he's reading, NYC
     and curiosities. Returns the most relevant passages with their note titles, source URLs
     and links, so you can answer from them and cite which notes you used."""
+    question = question.strip()
+    if not question:
+        return {"error": "question is empty.", "results": []}
+    if len(question) > QUESTION_MAX_CHARS:
+        return {"error": f"question is too long ({len(question)} characters; the limit is {QUESTION_MAX_CHARS}).", "results": []}
+    match = None
+    if folder:
+        match = next((f for f in NOTE_FOLDERS if _folder_key(f) == _folder_key(folder)), None)
+        if match is None:
+            return {"error": f"Unknown folder {folder!r}. Use one of: {', '.join(NOTE_FOLDERS)}.", "results": []}
+
     if not os.environ.get("MONGODB_URI"):
         return {"error": "Notes search isn't configured on this server (MONGODB_URI is not set).", "results": []}
 
@@ -414,8 +433,7 @@ def ask_notes(
         "numCandidates": limit * 20,
         "limit": limit,
     }
-    if folder:
-        match = next((f for f in NOTE_FOLDERS if _norm(f) == _norm(folder)), folder)
+    if match:
         search["filter"] = {"folder": {"$eq": match}}
 
     try:
@@ -426,7 +444,12 @@ def ask_notes(
                           "source": 1, "tags": 1, "text": 1, "score": {"$meta": "vectorSearchScore"}}},
         ]))
     except Exception as e:  # bad URI, network, timeout, auth, index still building, rate limit
-        return {"error": f"Notes search failed: {type(e).__name__}: {e}", "results": []}
+        # The message can hold cluster host names and server error documents: log it, don't return it.
+        print(f"ask_notes: {type(e).__name__}: {e}", file=sys.stderr)
+        kind = type(e).__name__
+        if getattr(e, "timeout", False):  # pymongo marks timeout errors with .timeout
+            return {"error": f"Notes search timed out ({kind}). Try again later.", "results": []}
+        return {"error": f"Notes search failed ({kind}). Try again later.", "results": []}
 
     from urllib.parse import quote
 
