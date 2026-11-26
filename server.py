@@ -73,6 +73,31 @@ COUNTRY_ALIASES = {
 }
 
 
+# US states (and DC) by name and postal code, so "Houston, TX" can narrow a match to the US.
+US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+    "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "DC": "District of Columbia",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois",
+    "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana",
+    "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon",
+    "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
+    "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia",
+    "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+}
+US_STATE_KEYS = {_k.lower() for _k in US_STATES} | {_norm(_v) for _v in US_STATES.values()}
+
+
+def _required(text: str, name: str) -> str:
+    """The stripped text, or a tool error if it's blank (an empty pattern matches everything)."""
+    text = text.strip()
+    if not text:
+        raise ValueError(f"{name} must not be empty")
+    return text
+
+
 def _word_match(q: str, text: str) -> bool:
     """True if q appears in text as whole words ("uk" is not in "montauk")."""
     return re.search(rf"(?<!\w){re.escape(q)}(?!\w)", _norm(text)) is not None
@@ -94,6 +119,15 @@ def _country_code(query: str) -> str | None:
     prefix = re.compile(rf"(?<!\w){re.escape(q)}")
     hits = [code for code, name in COUNTRY_NAMES.items() if prefix.search(_norm(name))]
     return hits[0] if len(hits) == 1 else None
+
+
+def _qualifier_countries(qualifier: str) -> set[str]:
+    """Country codes a qualifier like "Japan", "TX" or "Georgia" can mean. Ambiguous ones
+    ("GA" is Georgia or Gabon, "CA" is California or Canada) allow every country they name."""
+    codes = {code} if (code := _country_code(qualifier)) else set()
+    if _norm(qualifier) in US_STATE_KEYS:
+        codes.add("US")
+    return codes
 
 
 def _trip_view(t: dict, detail: bool = False) -> dict:
@@ -198,33 +232,54 @@ def countries_visited() -> dict:
     return {"count": len(visited), "countries": visited}
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
-def has_visited(place: Annotated[str, Field(description="A country, city or airport code/name")]) -> dict:
-    """Check whether Ashar has been to a country, city or airport, and which trips mention it."""
+def _place_matches(place: str, allowed: set[str] | None = None) -> tuple[list[dict], list[dict]]:
+    """Countries, cities and airports matching place, and the trips that mention it.
+    With allowed, only those in one of these country codes count."""
     q = _norm(place)
-    result: dict[str, Any] = {"query": place, "visited": False, "matches": []}
+    ok = lambda c: allowed is None or c in allowed
+    matches: list[dict] = []
 
     code = _country_code(place)
+    if code and not ok(code):
+        code = None
     if code and any(c["code"] == code and c.get("visited") for c in TRAVEL["countries"]):
-        result["matches"].append({"type": "country", "name": COUNTRY_NAMES[code]})
+        matches.append({"type": "country", "name": COUNTRY_NAMES[code]})
     for city in TRAVEL["cities"]:
-        if _word_match(q, city["name"]):
-            result["matches"].append(
+        if ok(city["countryCode"]) and _word_match(q, city["name"]):
+            matches.append(
                 {"type": "city", "name": city["name"], "country": COUNTRY_NAMES.get(city["countryCode"])}
             )
     for ap in TRAVEL["airports"]:
-        if q == _norm(ap["code"]) or _word_match(q, ap["name"]):
-            result["matches"].append({"type": "airport", "name": f"{ap['name']} ({ap['code']})", "city": ap["city"]})
+        if ok(ap["countryCode"]) and (q == _norm(ap["code"]) or _word_match(q, ap["name"])):
+            matches.append({"type": "airport", "name": f"{ap['name']} ({ap['code']})", "city": ap["city"]})
 
     trips = [
         t for t in TRAVEL["trips"]
         if (code and code in t.get("countries", []))
-        or _word_match(q, t["name"]) or _word_match(q, t.get("description", ""))
-        or any(_word_match(q, c) for c in t.get("cities", []))
+        or ((allowed is None or allowed & set(t.get("countries", [])))
+            and (_word_match(q, t["name"]) or _word_match(q, t.get("description", ""))
+                 or any(_word_match(q, c) for c in t.get("cities", []))))
     ]
-    result["trips"] = [_trip_view(t) for t in sorted(trips, key=lambda t: t["startDate"], reverse=True)]
-    result["visited"] = bool(result["matches"])
-    return result
+    return matches, trips
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def has_visited(place: Annotated[str, Field(description="A country, city or airport code/name, optionally with a country or US state after a comma, e.g. 'Houston, TX'")]) -> dict:
+    """Check whether Ashar has been to a country, city or airport, and which trips mention it."""
+    text = _required(place, "place")
+    matches, trips = _place_matches(text)
+    if not matches and "," in text:
+        # "Tokyo, Japan" or "Houston, TX": match the place, keep what's in the qualifier's country.
+        name, qualifier = text.split(",", 1)[0].strip(), text.rsplit(",", 1)[1].strip()
+        if name:
+            matches, trips = _place_matches(name, _qualifier_countries(qualifier) or None)
+
+    return {
+        "query": place,
+        "visited": bool(matches),
+        "matches": matches,
+        "trips": [_trip_view(t) for t in sorted(trips, key=lambda t: t["startDate"], reverse=True)],
+    }
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -317,6 +372,7 @@ def life_highlights() -> dict:
 @mcp.tool(annotations={"readOnlyHint": True})
 def search_everything(query: Annotated[str, Field(description="Keyword or phrase")]) -> dict:
     """Keyword search across trips, places, trackers and Things Done in one call."""
+    query = _required(query, "query")
     q = _norm(query)
     code = _country_code(query)
     country = lambda c: COUNTRY_NAMES.get(c, c)
