@@ -80,6 +80,19 @@ async def check_place_qualifiers(client: Client) -> None:
     texas = await call(client, "has_visited", {"place": "Paris, Texas"})
     assert not texas["visited"] and not texas["trips"], f"Paris, Texas matched France: {texas}"
 
+    # A qualified trip needs the place at a stop in that country, not just both on one itinerary.
+    cairo_bh = await call(client, "has_visited", {"place": "Cairo, Bahrain"})
+    assert not cairo_bh["visited"] and not cairo_bh["trips"], f"Cairo, Bahrain matched: {cairo_bh}"
+    cairo_eg = await call(client, "has_visited", {"place": "Cairo, Egypt"})
+    assert "trip-17" in [t["id"] for t in cairo_eg["trips"]], cairo_eg["trips"]
+
+    # The result says how the qualifier was read: a state narrows to the US only, unknowns are ignored.
+    alaska = await call(client, "has_visited", {"place": "Houston, Alaska"})
+    assert alaska["qualifier"]["countries"] == ["United States"], alaska["qualifier"]
+    assert "isn't checked" in alaska["qualifier"]["note"], alaska["qualifier"]
+    narnia = await call(client, "has_visited", {"place": "Tokyo, Narnia"})
+    assert narnia["qualifier"]["countries"] == [] and "ignored" in narnia["qualifier"]["note"], narnia
+
     for tool, arg in [("has_visited", "place"), ("search_everything", "query")]:
         for blank in ("", "   "):
             try:

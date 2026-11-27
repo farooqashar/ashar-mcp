@@ -234,10 +234,12 @@ def countries_visited() -> dict:
 
 def _place_matches(place: str, allowed: set[str] | None = None) -> tuple[list[dict], list[dict]]:
     """Countries, cities and airports matching place, and the trips that mention it.
-    With allowed, only those in one of these country codes count."""
+    With allowed, only places in one of these country codes count, and a trip counts only
+    if the place is at one of its stops in an allowed country (see _stop_allowed)."""
     q = _norm(place)
     ok = lambda c: allowed is None or c in allowed
     matches: list[dict] = []
+    homes: set[str] = set()  # countries that have a city or airport matching place
 
     code = _country_code(place)
     if code and not ok(code):
@@ -245,41 +247,87 @@ def _place_matches(place: str, allowed: set[str] | None = None) -> tuple[list[di
     if code and any(c["code"] == code and c.get("visited") for c in TRAVEL["countries"]):
         matches.append({"type": "country", "name": COUNTRY_NAMES[code]})
     for city in TRAVEL["cities"]:
-        if ok(city["countryCode"]) and _word_match(q, city["name"]):
-            matches.append(
-                {"type": "city", "name": city["name"], "country": COUNTRY_NAMES.get(city["countryCode"])}
-            )
+        if _word_match(q, city["name"]):
+            homes.add(city["countryCode"])
+            if ok(city["countryCode"]):
+                matches.append(
+                    {"type": "city", "name": city["name"], "country": COUNTRY_NAMES.get(city["countryCode"])}
+                )
     for ap in TRAVEL["airports"]:
-        if ok(ap["countryCode"]) and (q == _norm(ap["code"]) or _word_match(q, ap["name"])):
-            matches.append({"type": "airport", "name": f"{ap['name']} ({ap['code']})", "city": ap["city"]})
+        if q == _norm(ap["code"]) or _word_match(q, ap["name"]):
+            homes.add(ap["countryCode"])
+            if ok(ap["countryCode"]):
+                matches.append({"type": "airport", "name": f"{ap['name']} ({ap['code']})", "city": ap["city"]})
 
     trips = [
         t for t in TRAVEL["trips"]
         if (code and code in t.get("countries", []))
-        or ((allowed is None or allowed & set(t.get("countries", [])))
-            and (_word_match(q, t["name"]) or _word_match(q, t.get("description", ""))
-                 or any(_word_match(q, c) for c in t.get("cities", []))))
+        or ((_word_match(q, t["name"]) or _word_match(q, t.get("description", ""))
+             or any(_word_match(q, c) for c in t.get("cities", [])))
+            and _stop_allowed(set(t.get("countries", [])), homes, allowed))
     ]
     return matches, trips
 
 
+def _stop_allowed(trip_countries: set[str], homes: set[str], allowed: set[str] | None) -> bool:
+    """Whether a trip's mention of a place can be pinned to a stop in an allowed country.
+    Trips list their countries and cities separately, so a qualified match goes by where the
+    place is: a country that has a city or airport of that name, that the trip went to and
+    that the qualifier allows. For a name with no city or airport record, every country on
+    the trip must be allowed, since the mention could be at any of its stops."""
+    if allowed is None:
+        return True
+    if homes:
+        return bool(homes & trip_countries & allowed)
+    return bool(trip_countries) and trip_countries <= allowed
+
+
+def _qualifier_view(qualifier: str, allowed: set[str]) -> dict:
+    """How has_visited read the part after the comma, so callers don't assume more precision."""
+    view: dict[str, Any] = {"text": qualifier, "countries": sorted(COUNTRY_NAMES.get(c, c) for c in allowed)}
+    if not allowed:
+        view["note"] = "Not a country or US state this server knows, so it was ignored."
+    elif _norm(qualifier) in US_STATE_KEYS:
+        view["note"] = (
+            "As a US state this only narrows the match to the United States: the travel data doesn't "
+            "record which state a city or airport is in, so the state itself isn't checked."
+        )
+    else:
+        view["note"] = "Only places, and trip stops, in these countries count."
+    return view
+
+
 @mcp.tool(annotations={"readOnlyHint": True})
-def has_visited(place: Annotated[str, Field(description="A country, city or airport code/name, optionally with a country or US state after a comma, e.g. 'Houston, TX'")]) -> dict:
-    """Check whether Ashar has been to a country, city or airport, and which trips mention it."""
+def has_visited(
+    place: Annotated[str, Field(description=(
+        "A country, city or airport code/name, optionally followed by a comma and a country, "
+        "e.g. 'Tokyo, Japan', to only count places in that country. A US state or postal code "
+        "after the comma ('Houston, TX') only narrows to the United States; the state isn't checked."
+    ))],
+) -> dict:
+    """Check whether Ashar has been to a country, city or airport, and which trips mention it.
+    With a 'Place, Country' query, the result's qualifier field says how the part after the
+    comma was read; a US state there narrows to the United States, not to that state."""
     text = _required(place, "place")
     matches, trips = _place_matches(text)
+    qualifier_view = None
     if not matches and "," in text:
         # "Tokyo, Japan" or "Houston, TX": match the place, keep what's in the qualifier's country.
         name, qualifier = text.split(",", 1)[0].strip(), text.rsplit(",", 1)[1].strip()
         if name:
-            matches, trips = _place_matches(name, _qualifier_countries(qualifier) or None)
+            allowed = _qualifier_countries(qualifier)
+            matches, trips = _place_matches(name, allowed or None)
+            qualifier_view = _qualifier_view(qualifier, allowed)
 
-    return {
+    result = {
         "query": place,
         "visited": bool(matches),
         "matches": matches,
         "trips": [_trip_view(t) for t in sorted(trips, key=lambda t: t["startDate"], reverse=True)],
     }
+    if qualifier_view:
+        result["qualifier"] = qualifier_view
+    return result
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
