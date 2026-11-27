@@ -97,6 +97,19 @@ def _country_code(query: str) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+def _month_name(value: str) -> str:
+    """Canonical month name for a full name, 3-letter abbreviation, "Sept" or 1-12 (case-insensitive)."""
+    v = _norm(value)
+    if v.isdigit() and 1 <= int(v) <= 12:
+        return MONTHS[int(v) - 1]
+    for name in MONTHS:
+        if v in (name.lower(), name[:3].lower()):
+            return name
+    if v == "sept":
+        return "September"
+    raise ValueError(f"Unknown month {value!r}. Use a month name like 'March', 'Mar' or a number 1-12.")
+
+
 def _trip_view(t: dict, detail: bool = False) -> dict:
     out = {
         "id": t["id"],
@@ -285,14 +298,14 @@ def get_tracker(tracker_id: Annotated[str, Field(description="Tracker id from tr
 @mcp.tool(annotations={"readOnlyHint": True})
 def things_done(
     year: Annotated[int | None, Field(description="e.g. 2019")] = None,
-    month: Annotated[str | None, Field(description="Month name, e.g. 'March'")] = None,
+    month: Annotated[str | None, Field(description="Month: full name ('March'), 3-letter abbreviation ('Mar', also 'Sept') or number 1-12, any case")] = None,
     query: Annotated[str | None, Field(description="Keyword to filter entries")] = None,
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
 ) -> dict:
     """Ashar's 'Things Done' log: month-by-month accomplishments and life events since 2017.
     Filter by year, month and/or keyword."""
     if month:
-        month = month.strip().capitalize()
+        month = _month_name(month)
     q = _norm(query) if query else None
     hits = [
         {"year": y, "month": m, "entry": text}

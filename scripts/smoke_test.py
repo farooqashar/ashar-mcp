@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from fastmcp import Client  # noqa: E402
+from fastmcp.exceptions import ToolError  # noqa: E402
 
 import server  # noqa: E402
 
@@ -88,6 +89,21 @@ async def check_search(client: Client) -> None:
     assert common["thingsDoneTotal"] == len(matches), common["thingsDoneTotal"]
     assert common["thingsDoneTruncated"] is True, common
     assert houston["thingsDoneTotal"] < 50 and houston["thingsDoneTruncated"] is False, houston
+
+
+async def check_things_done(client: Client) -> None:
+    """things_done accepts month abbreviations and numbers, and rejects an unknown month."""
+    september = (await call(client, "things_done", {"month": "September"}))["total"]
+    assert september, "no Things Done entries for September"
+    for month in ("Sep", "sept", "9", "09"):
+        res = await call(client, "things_done", {"month": month})
+        assert res["total"] == september, f"things_done(month={month!r}) total {res['total']} != {september}"
+    try:
+        await client.call_tool("things_done", {"month": "Marhc"})
+    except ToolError as e:
+        assert "Unknown month 'Marhc'" in str(e), e
+    else:
+        raise AssertionError("things_done(month='Marhc') should fail")
 
 
 class _FakeNotes:
@@ -188,6 +204,7 @@ async def main() -> None:
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
         await check_country_lookup(client)
         await check_search(client)
+        await check_things_done(client)
         notes_checked = await check_ask_notes(client)
     print(
         f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; "
