@@ -63,6 +63,46 @@ async def check_country_lookup(client: Client) -> None:
     assert await call(client, "list_trips", {"country": "Oman"}) == {"result": []}
 
 
+async def check_place_qualifiers(client: Client) -> None:
+    """"City, country/state" finds the city in that country only; a blank query is an error."""
+    for place, city in [
+        ("Tokyo, Japan", "Tokyo"), ("Paris, France", "Paris"), ("Houston, TX", "Houston"),
+        ("Houston, Texas", "Houston"), ("Houston, USA", "Houston"), ("Tokyo, Narnia", "Tokyo"),
+    ]:
+        res = await call(client, "has_visited", {"place": place})
+        cities = [m["name"] for m in res["matches"] if m["type"] == "city"]
+        assert res["visited"] and city in cities, f"has_visited({place!r}): {res['matches']}"
+        assert res["query"] == place, res["query"]
+
+    houston = await call(client, "has_visited", {"place": "Houston, TX"})
+    assert houston["trips"], "has_visited('Houston, TX') found no trips"
+
+    texas = await call(client, "has_visited", {"place": "Paris, Texas"})
+    assert not texas["visited"] and not texas["trips"], f"Paris, Texas matched France: {texas}"
+
+    # A qualified trip needs the place at a stop in that country, not just both on one itinerary.
+    cairo_bh = await call(client, "has_visited", {"place": "Cairo, Bahrain"})
+    assert not cairo_bh["visited"] and not cairo_bh["trips"], f"Cairo, Bahrain matched: {cairo_bh}"
+    cairo_eg = await call(client, "has_visited", {"place": "Cairo, Egypt"})
+    assert "trip-17" in [t["id"] for t in cairo_eg["trips"]], cairo_eg["trips"]
+
+    # The result says how the qualifier was read: a state narrows to the US only, unknowns are ignored.
+    alaska = await call(client, "has_visited", {"place": "Houston, Alaska"})
+    assert alaska["qualifier"]["countries"] == ["United States"], alaska["qualifier"]
+    assert "isn't checked" in alaska["qualifier"]["note"], alaska["qualifier"]
+    narnia = await call(client, "has_visited", {"place": "Tokyo, Narnia"})
+    assert narnia["qualifier"]["countries"] == [] and "ignored" in narnia["qualifier"]["note"], narnia
+
+    for tool, arg in [("has_visited", "place"), ("search_everything", "query")]:
+        for blank in ("", "   "):
+            try:
+                await client.call_tool(tool, {arg: blank})
+            except ToolError as e:
+                assert "must not be empty" in str(e), e
+            else:
+                raise AssertionError(f"{tool}({blank!r}) should be an error")
+
+
 async def check_search(client: Client) -> None:
     """search_everything finds trips by country name, ignores JSON keys, and returns the
     newest 50 Things Done matches with their total."""
@@ -203,12 +243,13 @@ async def main() -> None:
             unknown = await client.call_tool("list_places", {"kind": kind, "country": "Narnia"})
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
         await check_country_lookup(client)
+        await check_place_qualifiers(client)
         await check_search(client)
         await check_things_done(client)
         notes_checked = await check_ask_notes(client)
     print(
         f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; "
-        f"country lookups and search resolve; {notes_checked}"
+        f"country lookups, place qualifiers and search resolve; {notes_checked}"
     )
 
 
