@@ -317,7 +317,9 @@ def life_highlights() -> dict:
 
 @mcp.tool(annotations={"readOnlyHint": True})
 def search_everything(query: Annotated[str, Field(description="Keyword or phrase")]) -> dict:
-    """Keyword search across trips, places, trackers and Things Done in one call."""
+    """Keyword search across trips, places, trackers and Things Done in one call.
+    Things Done matches are newest first and capped at 50; thingsDoneTotal and
+    thingsDoneTruncated say how many matched. Call things_done(query=...) for more."""
     q = _norm(query)
     code = _country_code(query)
     country = lambda c: COUNTRY_NAMES.get(c, c)
@@ -338,6 +340,9 @@ def search_everything(query: Annotated[str, Field(description="Keyword or phrase
         items = data.get("visited", []) + data.get("remaining", [])
         return hit(c["name"], c.get("description"), *map(_item_label, items))
 
+    done = [
+        {"year": y, "month": m, "entry": t} for y, m, t in reversed(list(_done_entries())) if q in _norm(t)
+    ]
     return {
         "trips": [_trip_view(t) for t in TRAVEL["trips"] if trip_hit(t)],
         "cities": [c["name"] for c in TRAVEL["cities"] if place_hit(c, c["name"])],
@@ -347,9 +352,9 @@ def search_everything(query: Annotated[str, Field(description="Keyword or phrase
             if place_hit(a, a["code"], a["name"], a["city"])
         ],
         "trackers": [c["name"] for c in TRAVEL["challenges"] if tracker_hit(c)],
-        "thingsDone": [
-            {"year": y, "month": m, "entry": t} for y, m, t in _done_entries() if q in _norm(t)
-        ][:50],
+        "thingsDone": done[:50],
+        "thingsDoneTotal": len(done),
+        "thingsDoneTruncated": len(done) > 50,
         "lifeHighlights": [x for k in ("lifeHappenings", "funFacts") for x in DONE[k] if q in _norm(x)]
         + [e for k in ("hackathons", "conferences") for g in DONE[k] for e in g["events"] if hit(*e.values())],
     }
