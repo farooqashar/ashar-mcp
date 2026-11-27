@@ -17,7 +17,7 @@ All of its data is already public on [ashar-travel.vercel.app](https://ashar-tra
 | `has_visited(place)` | "Has Ashar been to X?" across countries, cities, airports and trips |
 | `list_places(kind, country?)` | Cities or airports, optionally by country |
 | `travel_trackers()` / `get_tracker(id)` | Continents, countries, airlines, airports, "Stans" and other challenges, with done and remaining items |
-| `things_done(year?, month?, query?)` | The month-by-month accomplishments log since 2017 |
+| `things_done(year?, month?, query?, limit?)` | The month-by-month accomplishments log since 2017 |
 | `life_highlights()` | Major life happenings, hackathons, conferences, fun facts |
 | `search_everything(query)` | Keyword search across all of the above |
 | `ask_notes(question, folder?, limit?)` | Semantic search over my Obsidian vault of web clippings, returning the most relevant passages with source links (see [Notes search](#notes-search)) |
@@ -37,6 +37,9 @@ The full datasets are also exposed as resources: `ashar://travel.json` and `asha
   Atlas embeds it and returns the closest passages. The Claude calling the tool writes the answer.
 - Mongo calls are capped at 10 seconds (`timeoutMS`), so a slow cluster returns an `error` instead
   of hanging the request.
+- Questions are limited to 1,000 characters, and `folder` must name one of the vault's folders
+  (case, spaces and punctuation are ignored). Errors give the error's class name only; the full
+  message is logged to stderr.
 
 Set `MONGODB_URI` (the Atlas connection string) wherever the server runs. Without it, `ask_notes`
 returns a "not configured" message and every other tool works as before.

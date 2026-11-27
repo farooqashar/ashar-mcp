@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -128,6 +129,19 @@ def _qualifier_countries(qualifier: str) -> set[str]:
     if _norm(qualifier) in US_STATE_KEYS:
         codes.add("US")
     return codes
+
+
+def _month_name(value: str) -> str:
+    """Canonical month name for a full name, 3-letter abbreviation, "Sept" or 1-12 (case-insensitive)."""
+    v = _norm(value)
+    if v.isdigit() and 1 <= int(v) <= 12:
+        return MONTHS[int(v) - 1]
+    for name in MONTHS:
+        if v in (name.lower(), name[:3].lower()):
+            return name
+    if v == "sept":
+        return "September"
+    raise ValueError(f"Unknown month {value!r}. Use a month name like 'March', 'Mar' or a number 1-12.")
 
 
 def _trip_view(t: dict, detail: bool = False) -> dict:
@@ -387,14 +401,14 @@ def get_tracker(tracker_id: Annotated[str, Field(description="Tracker id from tr
 @mcp.tool(annotations={"readOnlyHint": True})
 def things_done(
     year: Annotated[int | None, Field(description="e.g. 2019")] = None,
-    month: Annotated[str | None, Field(description="Month name, e.g. 'March'")] = None,
+    month: Annotated[str | None, Field(description="Month: full name ('March'), 3-letter abbreviation ('Mar', also 'Sept') or number 1-12, any case")] = None,
     query: Annotated[str | None, Field(description="Keyword to filter entries")] = None,
     limit: Annotated[int, Field(ge=1, le=500)] = 100,
 ) -> dict:
     """Ashar's 'Things Done' log: month-by-month accomplishments and life events since 2017.
     Filter by year, month and/or keyword."""
     if month:
-        month = month.strip().capitalize()
+        month = _month_name(month)
     q = _norm(query) if query else None
     hits = [
         {"year": y, "month": m, "entry": text}
@@ -419,7 +433,9 @@ def life_highlights() -> dict:
 
 @mcp.tool(annotations={"readOnlyHint": True})
 def search_everything(query: Annotated[str, Field(description="Keyword or phrase")]) -> dict:
-    """Keyword search across trips, places, trackers and Things Done in one call."""
+    """Keyword search across trips, places, trackers and Things Done in one call.
+    Things Done matches are newest first and capped at 50; thingsDoneTotal and
+    thingsDoneTruncated say how many matched. Call things_done(query=...) for more."""
     query = _required(query, "query")
     q = _norm(query)
     code = _country_code(query)
@@ -441,6 +457,9 @@ def search_everything(query: Annotated[str, Field(description="Keyword or phrase
         items = data.get("visited", []) + data.get("remaining", [])
         return hit(c["name"], c.get("description"), *map(_item_label, items))
 
+    done = [
+        {"year": y, "month": m, "entry": t} for y, m, t in reversed(list(_done_entries())) if q in _norm(t)
+    ]
     return {
         "trips": [_trip_view(t) for t in TRAVEL["trips"] if trip_hit(t)],
         "cities": [c["name"] for c in TRAVEL["cities"] if place_hit(c, c["name"])],
@@ -450,9 +469,9 @@ def search_everything(query: Annotated[str, Field(description="Keyword or phrase
             if place_hit(a, a["code"], a["name"], a["city"])
         ],
         "trackers": [c["name"] for c in TRAVEL["challenges"] if tracker_hit(c)],
-        "thingsDone": [
-            {"year": y, "month": m, "entry": t} for y, m, t in _done_entries() if q in _norm(t)
-        ][:50],
+        "thingsDone": done[:50],
+        "thingsDoneTotal": len(done),
+        "thingsDoneTruncated": len(done) > 50,
         "lifeHighlights": [x for k in ("lifeHappenings", "funFacts") for x in DONE[k] if q in _norm(x)]
         + [e for k in ("hackathons", "conferences") for g in DONE[k] for e in g["events"] if hit(*e.values())],
     }
@@ -476,6 +495,13 @@ _notes_client = None
 # Finite bounds so a slow or hung Atlas can't stall a (serverless) request. timeoutMS caps each
 # whole operation, including server selection, connection checkout, retries and reading the reply.
 NOTES_TIMEOUT_MS = 10_000
+# Atlas embeds every question with Voyage AI, so cap its size; the server has no auth.
+QUESTION_MAX_CHARS = 1_000
+
+
+def _folder_key(s: str) -> str:
+    """Folder names compared without case, spaces or punctuation: 'ai agents' == 'AI-Agents'."""
+    return re.sub(r"[\W_]+", "", s.lower())
 
 
 def _notes():
@@ -500,7 +526,7 @@ def _notes():
 
 @mcp.tool(annotations={"readOnlyHint": True})
 def ask_notes(
-    question: Annotated[str, Field(description="What to look for, in plain language, e.g. 'tools for running coding agents in the cloud'")],
+    question: Annotated[str, Field(description=f"What to look for, in plain language (up to {QUESTION_MAX_CHARS} characters), e.g. 'tools for running coding agents in the cloud'")],
     folder: Annotated[str | None, Field(description=f"Only search one folder: {', '.join(NOTE_FOLDERS)}")] = None,
     limit: Annotated[int, Field(ge=1, le=10, description="How many passages to return")] = 5,
 ) -> dict:
@@ -508,6 +534,17 @@ def ask_notes(
     he saved about AI agents, companies and products, infra/DevOps, things he's reading, NYC
     and curiosities. Returns the most relevant passages with their note titles, source URLs
     and links, so you can answer from them and cite which notes you used."""
+    question = question.strip()
+    if not question:
+        return {"error": "question is empty.", "results": []}
+    if len(question) > QUESTION_MAX_CHARS:
+        return {"error": f"question is too long ({len(question)} characters; the limit is {QUESTION_MAX_CHARS}).", "results": []}
+    match = None
+    if folder:
+        match = next((f for f in NOTE_FOLDERS if _folder_key(f) == _folder_key(folder)), None)
+        if match is None:
+            return {"error": f"Unknown folder {folder!r}. Use one of: {', '.join(NOTE_FOLDERS)}.", "results": []}
+
     if not os.environ.get("MONGODB_URI"):
         return {"error": "Notes search isn't configured on this server (MONGODB_URI is not set).", "results": []}
 
@@ -518,8 +555,7 @@ def ask_notes(
         "numCandidates": limit * 20,
         "limit": limit,
     }
-    if folder:
-        match = next((f for f in NOTE_FOLDERS if _norm(f) == _norm(folder)), folder)
+    if match:
         search["filter"] = {"folder": {"$eq": match}}
 
     try:
@@ -530,7 +566,12 @@ def ask_notes(
                           "source": 1, "tags": 1, "text": 1, "score": {"$meta": "vectorSearchScore"}}},
         ]))
     except Exception as e:  # bad URI, network, timeout, auth, index still building, rate limit
-        return {"error": f"Notes search failed: {type(e).__name__}: {e}", "results": []}
+        # The message can hold cluster host names and server error documents: log it, don't return it.
+        print(f"ask_notes: {type(e).__name__}: {e}", file=sys.stderr)
+        kind = type(e).__name__
+        if getattr(e, "timeout", False):  # pymongo marks timeout errors with .timeout
+            return {"error": f"Notes search timed out ({kind}). Try again later.", "results": []}
+        return {"error": f"Notes search failed ({kind}). Try again later.", "results": []}
 
     from urllib.parse import quote
 

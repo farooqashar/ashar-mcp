@@ -104,7 +104,8 @@ async def check_place_qualifiers(client: Client) -> None:
 
 
 async def check_search(client: Client) -> None:
-    """search_everything finds trips by country name and ignores JSON keys."""
+    """search_everything finds trips by country name, ignores JSON keys, and returns the
+    newest 50 Things Done matches with their total."""
     japan = await call(client, "search_everything", {"query": "Japan"})
     assert "trip-4" in [t["id"] for t in japan["trips"]], japan["trips"]
     assert "Tokyo" in japan["cities"], japan["cities"]
@@ -119,6 +120,31 @@ async def check_search(client: Client) -> None:
     houston = await call(client, "search_everything", {"query": "Houston"})
     assert houston["trips"] and "Houston" in houston["cities"], houston
 
+    common = await call(client, "search_everything", {"query": "and"})
+    matches = [y for y, _, t in server._done_entries() if "and" in server._norm(t)]
+    assert len(matches) > 50, f"expected more than 50 Things Done matches for 'and', got {len(matches)}"
+    assert len(common["thingsDone"]) == 50, len(common["thingsDone"])
+    years = [e["year"] for e in common["thingsDone"]]
+    assert years[0] == max(matches) and years == sorted(years, reverse=True), years
+    assert common["thingsDoneTotal"] == len(matches), common["thingsDoneTotal"]
+    assert common["thingsDoneTruncated"] is True, common
+    assert houston["thingsDoneTotal"] < 50 and houston["thingsDoneTruncated"] is False, houston
+
+
+async def check_things_done(client: Client) -> None:
+    """things_done accepts month abbreviations and numbers, and rejects an unknown month."""
+    september = (await call(client, "things_done", {"month": "September"}))["total"]
+    assert september, "no Things Done entries for September"
+    for month in ("Sep", "sept", "9", "09"):
+        res = await call(client, "things_done", {"month": month})
+        assert res["total"] == september, f"things_done(month={month!r}) total {res['total']} != {september}"
+    try:
+        await client.call_tool("things_done", {"month": "Marhc"})
+    except ToolError as e:
+        assert "Unknown month 'Marhc'" in str(e), e
+    else:
+        raise AssertionError("things_done(month='Marhc') should fail")
+
 
 class _FakeNotes:
     """Stands in for the Atlas collection: records the pipeline, returns one canned hit."""
@@ -131,6 +157,16 @@ class _FakeNotes:
         return [{"path": "AI-Agents/Agents in the cloud.md", "title": "Agents in the cloud",
                  "folder": "AI-Agents", "heading": "Setup", "source": "https://example.com/a",
                  "tags": ["clippings", "agents"], "text": "Run coding agents remotely.", "score": 0.91234}]
+
+
+class _RaisingNotes:
+    """An Atlas collection whose every query fails with the given exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def aggregate(self, pipeline: list) -> list:
+        raise self.exc
 
 
 async def check_ask_notes(client: Client) -> str:
@@ -148,6 +184,7 @@ async def check_ask_notes(client: Client) -> str:
         os.environ["MONGODB_URI"] = "mongodb://"
         notes = await call(client, "ask_notes", {"question": "coding agents"})
         assert notes["results"] == [] and "InvalidURI" in notes["error"], notes
+        assert "mongodb://" not in notes["error"], notes
 
         fake = _FakeNotes()
         server._notes = lambda: fake
@@ -158,11 +195,39 @@ async def check_ask_notes(client: Client) -> str:
         hit = notes["results"][0]
         assert hit["tags"] == ["agents"] and hit["score"] == 0.912, hit
         assert hit["note"].endswith("/AI-Agents/Agents%20in%20the%20cloud.md"), hit
+
+        await call(client, "ask_notes", {"question": "  coding agents  ", "folder": "AI agents"})
+        search = fake.pipeline[0]["$vectorSearch"]
+        assert search["query"] == {"text": "coding agents"}, search
+        assert search["filter"] == {"folder": {"$eq": "AI-Agents"}}, search
+
+        # Bad input is rejected before any Atlas call.
+        fake.pipeline = []
+        for args, needle in [
+            ({"question": "coding agents", "folder": "Recipes"}, "Unknown folder 'Recipes'. Use one of: AI-Agents"),
+            ({"question": "x" * (server.QUESTION_MAX_CHARS + 1)}, "too long"),
+            ({"question": "   "}, "empty"),
+        ]:
+            notes = await call(client, "ask_notes", args)
+            assert notes["results"] == [] and needle in notes["error"], (args, notes)
+        assert fake.pipeline == [], fake.pipeline
+
+        # Database errors keep their class name but not their message (host names, server documents).
+        from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
+
+        for exc, needle in [
+            (ServerSelectionTimeoutError("cluster0-shard-00-00.abc.mongodb.net:27017: timed out"), "timed out (ServerSelectionTimeoutError)"),
+            (OperationFailure("index not found", 291, {"errmsg": "secret", "host": "cluster0.abc.mongodb.net"}), "failed (OperationFailure)"),
+        ]:
+            server._notes = lambda exc=exc: _RaisingNotes(exc)
+            notes = await call(client, "ask_notes", {"question": "coding agents"})
+            assert notes["results"] == [] and needle in notes["error"], notes
+            assert "mongodb.net" not in notes["error"] and "index not found" not in notes["error"], notes
     finally:
         os.environ.pop("MONGODB_URI", None)
         server._notes = real_notes
         server._notes_client = None
-    return "ask_notes ran (unconfigured, bad URI and query shape against a fake collection)"
+    return "ask_notes ran (unconfigured, bad URI, input checks, hidden error text and query shape against a fake collection)"
 
 
 async def main() -> None:
@@ -180,6 +245,7 @@ async def main() -> None:
         await check_country_lookup(client)
         await check_place_qualifiers(client)
         await check_search(client)
+        await check_things_done(client)
         notes_checked = await check_ask_notes(client)
     print(
         f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; "
