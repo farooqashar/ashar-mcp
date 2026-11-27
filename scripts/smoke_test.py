@@ -92,6 +92,16 @@ class _FakeNotes:
                  "tags": ["clippings", "agents"], "text": "Run coding agents remotely.", "score": 0.91234}]
 
 
+class _RaisingNotes:
+    """An Atlas collection whose every query fails with the given exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def aggregate(self, pipeline: list) -> list:
+        raise self.exc
+
+
 async def check_ask_notes(client: Client) -> str:
     """ask_notes without Atlas: the unconfigured and bad-URI error shapes, and the query it builds.
     Skipped when MONGODB_URI is set, so the test never talks to a real cluster. Returns a summary."""
@@ -107,6 +117,7 @@ async def check_ask_notes(client: Client) -> str:
         os.environ["MONGODB_URI"] = "mongodb://"
         notes = await call(client, "ask_notes", {"question": "coding agents"})
         assert notes["results"] == [] and "InvalidURI" in notes["error"], notes
+        assert "mongodb://" not in notes["error"], notes
 
         fake = _FakeNotes()
         server._notes = lambda: fake
@@ -117,11 +128,39 @@ async def check_ask_notes(client: Client) -> str:
         hit = notes["results"][0]
         assert hit["tags"] == ["agents"] and hit["score"] == 0.912, hit
         assert hit["note"].endswith("/AI-Agents/Agents%20in%20the%20cloud.md"), hit
+
+        await call(client, "ask_notes", {"question": "  coding agents  ", "folder": "AI agents"})
+        search = fake.pipeline[0]["$vectorSearch"]
+        assert search["query"] == {"text": "coding agents"}, search
+        assert search["filter"] == {"folder": {"$eq": "AI-Agents"}}, search
+
+        # Bad input is rejected before any Atlas call.
+        fake.pipeline = []
+        for args, needle in [
+            ({"question": "coding agents", "folder": "Recipes"}, "Unknown folder 'Recipes'. Use one of: AI-Agents"),
+            ({"question": "x" * (server.QUESTION_MAX_CHARS + 1)}, "too long"),
+            ({"question": "   "}, "empty"),
+        ]:
+            notes = await call(client, "ask_notes", args)
+            assert notes["results"] == [] and needle in notes["error"], (args, notes)
+        assert fake.pipeline == [], fake.pipeline
+
+        # Database errors keep their class name but not their message (host names, server documents).
+        from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
+
+        for exc, needle in [
+            (ServerSelectionTimeoutError("cluster0-shard-00-00.abc.mongodb.net:27017: timed out"), "timed out (ServerSelectionTimeoutError)"),
+            (OperationFailure("index not found", 291, {"errmsg": "secret", "host": "cluster0.abc.mongodb.net"}), "failed (OperationFailure)"),
+        ]:
+            server._notes = lambda exc=exc: _RaisingNotes(exc)
+            notes = await call(client, "ask_notes", {"question": "coding agents"})
+            assert notes["results"] == [] and needle in notes["error"], notes
+            assert "mongodb.net" not in notes["error"] and "index not found" not in notes["error"], notes
     finally:
         os.environ.pop("MONGODB_URI", None)
         server._notes = real_notes
         server._notes_client = None
-    return "ask_notes ran (unconfigured, bad URI and query shape against a fake collection)"
+    return "ask_notes ran (unconfigured, bad URI, input checks, hidden error text and query shape against a fake collection)"
 
 
 async def main() -> None:

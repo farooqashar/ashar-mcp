@@ -37,6 +37,9 @@ The full datasets are also exposed as resources: `ashar://travel.json` and `asha
   Atlas embeds it and returns the closest passages. The Claude calling the tool writes the answer.
 - Mongo calls are capped at 10 seconds (`timeoutMS`), so a slow cluster returns an `error` instead
   of hanging the request.
+- Questions are limited to 1,000 characters, and `folder` must name one of the vault's folders
+  (case, spaces and punctuation are ignored). Errors give the error's class name only; the full
+  message is logged to stderr.
 
 Set `MONGODB_URI` (the Atlas connection string) wherever the server runs. Without it, `ask_notes`
 returns a "not configured" message and every other tool works as before.
