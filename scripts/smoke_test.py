@@ -103,6 +103,39 @@ async def check_place_qualifiers(client: Client) -> None:
                 raise AssertionError(f"{tool}({blank!r}) should be an error")
 
 
+async def check_city_aliases(client: Client) -> None:
+    """Either spelling of Medina and Mecca finds the city and both trips; a trip's own city list
+    counts as a visit, a mention in its description doesn't."""
+    for place in [
+        "Medina", "Mecca", "Madinah", "Makkah",
+        "Medina, Saudi Arabia", "Mecca, Saudi Arabia", "Madinah, Saudi Arabia", "Makkah, Saudi Arabia",
+    ]:
+        res = await call(client, "has_visited", {"place": place})
+        trips = {t["id"] for t in res["trips"]}
+        assert res["visited"] and {"trip-2", "trip-17"} <= trips, f"has_visited({place!r}): {res}"
+        cities = [m["name"] for m in res["matches"] if m["type"] == "city"]
+        assert cities and set(cities) <= {"Madinah", "Makkah"}, f"has_visited({place!r}) cities: {cities}"
+
+    ohio = await call(client, "has_visited", {"place": "Medina, Ohio"})
+    assert not ohio["visited"] and not ohio["trips"], f"Medina, Ohio matched Saudi Arabia: {ohio}"
+
+    # A name with no city record: listed in a trip's cities is a visit, only in its description is not.
+    fake = {
+        "id": "trip-smoke", "name": "Smoke test trip", "startDate": "1900-01-01", "endDate": "1900-01-02",
+        "countries": ["SA"], "cities": ["Atlantis"], "description": "Heard about Lemuria.",
+    }
+    server.TRAVEL["trips"].append(fake)
+    try:
+        listed = await call(client, "has_visited", {"place": "Atlantis"})
+        assert listed["visited"] and not listed["matches"], listed
+        assert [t["id"] for t in listed["trips"]] == ["trip-smoke"], listed["trips"]
+        mentioned = await call(client, "has_visited", {"place": "Lemuria"})
+        assert not mentioned["visited"], mentioned
+        assert [t["id"] for t in mentioned["trips"]] == ["trip-smoke"], mentioned["trips"]
+    finally:
+        server.TRAVEL["trips"].remove(fake)
+
+
 async def check_search(client: Client) -> None:
     """search_everything finds trips by country name, ignores JSON keys, and returns the
     newest 50 Things Done matches with their total."""
@@ -244,12 +277,13 @@ async def main() -> None:
             assert unknown.data["count"] == 0, f"list_places({kind!r}, 'Narnia') returned {unknown.data['count']} items"
         await check_country_lookup(client)
         await check_place_qualifiers(client)
+        await check_city_aliases(client)
         await check_search(client)
         await check_things_done(client)
         notes_checked = await check_ask_notes(client)
     print(
         f"ok: {len(expected)} README tools served; about_ashar, has_visited and list_places ran; "
-        f"country lookups, place qualifiers and search resolve; {notes_checked}"
+        f"country lookups, place qualifiers, city aliases and search resolve; {notes_checked}"
     )
 
 

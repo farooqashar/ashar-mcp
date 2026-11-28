@@ -73,6 +73,13 @@ COUNTRY_ALIASES = {
     **dict.fromkeys(["korea"], "KR"),
 }
 
+# Spellings of one city that differ between the city records and trips' city lists, keyed by
+# _norm() form: the records say "Madinah" and "Makkah" while a trip lists "Medina" and "Mecca".
+CITY_ALIASES = {
+    **dict.fromkeys(["medina", "madinah"], ("medina", "madinah")),
+    **dict.fromkeys(["mecca", "makkah"], ("mecca", "makkah")),
+}
+
 
 # US states (and DC) by name and postal code, so "Houston, TX" can narrow a match to the US.
 US_STATES = {
@@ -102,6 +109,17 @@ def _required(text: str, name: str) -> str:
 def _word_match(q: str, text: str) -> bool:
     """True if q appears in text as whole words ("uk" is not in "montauk")."""
     return re.search(rf"(?<!\w){re.escape(q)}(?!\w)", _norm(text)) is not None
+
+
+def _names_match(names: tuple[str, ...], text: str) -> bool:
+    """True if any of a place's spellings (see CITY_ALIASES) is in text as whole words."""
+    return any(_word_match(n, text) for n in names)
+
+
+def _place_names(place: str) -> tuple[str, ...]:
+    """The _norm() form of place and its other spellings, if CITY_ALIASES has any."""
+    q = _norm(place)
+    return CITY_ALIASES.get(q, (q,))
 
 
 def _country_code(query: str) -> str | None:
@@ -251,6 +269,7 @@ def _place_matches(place: str, allowed: set[str] | None = None) -> tuple[list[di
     With allowed, only places in one of these country codes count, and a trip counts only
     if the place is at one of its stops in an allowed country (see _stop_allowed)."""
     q = _norm(place)
+    names = _place_names(place)
     ok = lambda c: allowed is None or c in allowed
     matches: list[dict] = []
     homes: set[str] = set()  # countries that have a city or airport matching place
@@ -261,14 +280,14 @@ def _place_matches(place: str, allowed: set[str] | None = None) -> tuple[list[di
     if code and any(c["code"] == code and c.get("visited") for c in TRAVEL["countries"]):
         matches.append({"type": "country", "name": COUNTRY_NAMES[code]})
     for city in TRAVEL["cities"]:
-        if _word_match(q, city["name"]):
+        if _names_match(names, city["name"]):
             homes.add(city["countryCode"])
             if ok(city["countryCode"]):
                 matches.append(
                     {"type": "city", "name": city["name"], "country": COUNTRY_NAMES.get(city["countryCode"])}
                 )
     for ap in TRAVEL["airports"]:
-        if q == _norm(ap["code"]) or _word_match(q, ap["name"]):
+        if q == _norm(ap["code"]) or _names_match(names, ap["name"]):
             homes.add(ap["countryCode"])
             if ok(ap["countryCode"]):
                 matches.append({"type": "airport", "name": f"{ap['name']} ({ap['code']})", "city": ap["city"]})
@@ -276,8 +295,8 @@ def _place_matches(place: str, allowed: set[str] | None = None) -> tuple[list[di
     trips = [
         t for t in TRAVEL["trips"]
         if (code and code in t.get("countries", []))
-        or ((_word_match(q, t["name"]) or _word_match(q, t.get("description", ""))
-             or any(_word_match(q, c) for c in t.get("cities", [])))
+        or ((_names_match(names, t["name"]) or _names_match(names, t.get("description", ""))
+             or any(_names_match(names, c) for c in t.get("cities", [])))
             and _stop_allowed(set(t.get("countries", [])), homes, allowed))
     ]
     return matches, trips
@@ -323,6 +342,7 @@ def has_visited(
     With a 'Place, Country' query, the result's qualifier field says how the part after the
     comma was read; a US state there narrows to the United States, not to that state."""
     text = _required(place, "place")
+    searched = text
     matches, trips = _place_matches(text)
     qualifier_view = None
     if not matches and "," in text:
@@ -331,11 +351,15 @@ def has_visited(
         if name:
             allowed = _qualifier_countries(qualifier)
             matches, trips = _place_matches(name, allowed or None)
+            searched = name
             qualifier_view = _qualifier_view(qualifier, allowed)
 
+    # A trip that lists the place among its own cities counts; a mention in its description doesn't.
+    names = _place_names(searched)
+    listed = any(_names_match(names, c) for t in trips for c in t.get("cities", []))
     result = {
         "query": place,
-        "visited": bool(matches),
+        "visited": bool(matches) or listed,
         "matches": matches,
         "trips": [_trip_view(t) for t in sorted(trips, key=lambda t: t["startDate"], reverse=True)],
     }
