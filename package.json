@@ -1,15 +1,15 @@
 {
   "name": "ashar-mcp",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Data export for the ashar-mcp server",
   "scripts": {
     "refresh": "node scripts/export-data.mjs \"${TRAVEL_REPO:-../ashar-travel}\" \"${DONE_REPO:-../ashar-things-done}\"",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "python scripts/smoke_test.py"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "devDependencies": {
     "esbuild": "^0.24.2"
   }

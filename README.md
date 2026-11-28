@@ -51,6 +51,9 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python server.py          # serves http://localhost:8000/mcp
 ```
 
+To run the smoke test, activate the venv (`. .venv/bin/activate`) so `python` has the requirements
+installed, then run `python scripts/smoke_test.py`, or `npm test`, which runs the same command.
+
 To poke at it with the MCP Inspector, run `npx @modelcontextprotocol/inspector`, choose the
 "Streamable HTTP" transport, and use the URL `http://localhost:8000/mcp`.
 
