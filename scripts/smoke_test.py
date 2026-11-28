@@ -104,34 +104,36 @@ async def check_place_qualifiers(client: Client) -> None:
 
 
 async def check_city_aliases(client: Client) -> None:
-    """Either spelling of Medina and Mecca finds the city and both trips; a trip's own city list
-    counts as a visit, a mention in its description doesn't."""
-    for place in [
-        "Medina", "Mecca", "Madinah", "Makkah",
-        "Medina, Saudi Arabia", "Mecca, Saudi Arabia", "Madinah, Saudi Arabia", "Makkah, Saudi Arabia",
+    """Either spelling of Medina and Mecca finds its own city record and both trips; a trip's own
+    city list counts as a visit, a mention in its description or a longer city name doesn't."""
+    for spelling, city in [
+        ("Medina", "Madinah"), ("Madinah", "Madinah"), ("Mecca", "Makkah"), ("Makkah", "Makkah"),
     ]:
-        res = await call(client, "has_visited", {"place": place})
-        trips = {t["id"] for t in res["trips"]}
-        assert res["visited"] and {"trip-2", "trip-17"} <= trips, f"has_visited({place!r}): {res}"
-        cities = [m["name"] for m in res["matches"] if m["type"] == "city"]
-        assert cities and set(cities) <= {"Madinah", "Makkah"}, f"has_visited({place!r}) cities: {cities}"
+        for place in [spelling, f"{spelling}, Saudi Arabia"]:
+            res = await call(client, "has_visited", {"place": place})
+            trips = {t["id"] for t in res["trips"]}
+            assert res["visited"] and {"trip-2", "trip-17"} <= trips, f"has_visited({place!r}): {res}"
+            cities = [m["name"] for m in res["matches"] if m["type"] == "city"]
+            assert cities == [city], f"has_visited({place!r}) cities: {cities}, expected [{city!r}]"
 
     ohio = await call(client, "has_visited", {"place": "Medina, Ohio"})
     assert not ohio["visited"] and not ohio["trips"], f"Medina, Ohio matched Saudi Arabia: {ohio}"
 
     # A name with no city record: listed in a trip's cities is a visit, only in its description is not.
+    # Nor is a longer city name that contains it.
     fake = {
         "id": "trip-smoke", "name": "Smoke test trip", "startDate": "1900-01-01", "endDate": "1900-01-02",
-        "countries": ["SA"], "cities": ["Atlantis"], "description": "Heard about Lemuria.",
+        "countries": ["SA"], "cities": ["Atlantis", "New Hyperborea"], "description": "Heard about Lemuria.",
     }
     server.TRAVEL["trips"].append(fake)
     try:
         listed = await call(client, "has_visited", {"place": "Atlantis"})
         assert listed["visited"] and not listed["matches"], listed
         assert [t["id"] for t in listed["trips"]] == ["trip-smoke"], listed["trips"]
-        mentioned = await call(client, "has_visited", {"place": "Lemuria"})
-        assert not mentioned["visited"], mentioned
-        assert [t["id"] for t in mentioned["trips"]] == ["trip-smoke"], mentioned["trips"]
+        for place in ["Lemuria", "Hyperborea"]:
+            unlisted = await call(client, "has_visited", {"place": place})
+            assert not unlisted["visited"], unlisted
+            assert [t["id"] for t in unlisted["trips"]] == ["trip-smoke"], unlisted["trips"]
     finally:
         server.TRAVEL["trips"].remove(fake)
 

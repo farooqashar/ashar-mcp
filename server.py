@@ -354,9 +354,10 @@ def has_visited(
             searched = name
             qualifier_view = _qualifier_view(qualifier, allowed)
 
-    # A trip that lists the place among its own cities counts; a mention in its description doesn't.
+    # A trip that lists the place itself among its cities counts; a mention in its description,
+    # or a longer city name containing it ("New Atlantis" for "Atlantis"), doesn't.
     names = _place_names(searched)
-    listed = any(_names_match(names, c) for t in trips for c in t.get("cities", []))
+    listed = any(_norm(c) in names for t in trips for c in t.get("cities", []))
     result = {
         "query": place,
         "visited": bool(matches) or listed,
