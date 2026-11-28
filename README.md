@@ -40,6 +40,11 @@ The full datasets are also exposed as resources: `ashar://travel.json` and `asha
 - Questions are limited to 1,000 characters, and `folder` must name one of the vault's folders
   (case, spaces and punctuation are ignored). Errors give the error's class name only; the full
   message is logged to stderr.
+- Successful answers are cached for 10 minutes (up to 256 questions, keyed by the question with case
+  and spacing ignored, the folder and `limit`), so a repeat doesn't reach Atlas. Errors are never cached.
+- At most 30 searches a minute reach Atlas; past that, `ask_notes` returns "Notes search is busy. Try
+  again in a minute." without calling it. The cache and the limit live in each server process, so on
+  Vercel they are per serverless instance and best effort, not a hard cap.
 
 Set `MONGODB_URI` (the Atlas connection string) wherever the server runs. Without it, `ask_notes`
 returns a "not configured" message and every other tool works as before.

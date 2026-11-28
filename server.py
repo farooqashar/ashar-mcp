@@ -14,6 +14,9 @@ import json
 import os
 import re
 import sys
+import threading
+import time
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -497,6 +500,15 @@ _notes_client = None
 NOTES_TIMEOUT_MS = 10_000
 # Atlas embeds every question with Voyage AI, so cap its size; the server has no auth.
 QUESTION_MAX_CHARS = 1_000
+# Repeated questions are answered from a cache, and searches that would reach Atlas are capped.
+# Both live in this process, so on serverless they are per instance and best effort: a cold start
+# empties them and parallel instances each count on their own. A hard cap needs a Vercel firewall rule.
+NOTES_CACHE_SIZE = 256
+NOTES_CACHE_SECONDS = 600
+NOTES_CALLS_PER_MINUTE = 30
+_notes_cache: OrderedDict[tuple, tuple[float, list]] = OrderedDict()  # key -> (expires at, results)
+_notes_calls: deque[float] = deque()  # when each recent Atlas search started
+_notes_lock = threading.Lock()
 
 
 def _folder_key(s: str) -> str:
@@ -548,6 +560,20 @@ def ask_notes(
     if not os.environ.get("MONGODB_URI"):
         return {"error": "Notes search isn't configured on this server (MONGODB_URI is not set).", "results": []}
 
+    key = (" ".join(question.lower().split()), match, limit)
+    now = time.monotonic()
+    with _notes_lock:
+        cached = _notes_cache.get(key)
+        if cached and cached[0] > now:
+            _notes_cache.move_to_end(key)
+            return {"question": question, "results": cached[1]}
+        _notes_cache.pop(key, None)
+        while _notes_calls and _notes_calls[0] <= now - 60:
+            _notes_calls.popleft()
+        if len(_notes_calls) >= NOTES_CALLS_PER_MINUTE:
+            return {"error": "Notes search is busy. Try again in a minute.", "results": []}
+        _notes_calls.append(now)
+
     search: dict[str, Any] = {
         "index": NOTES_INDEX,
         "path": "text",
@@ -575,22 +601,26 @@ def ask_notes(
 
     from urllib.parse import quote
 
-    return {
-        "question": question,
-        "results": [
-            {
-                "title": h.get("title"),
-                "section": h.get("heading") or None,
-                "folder": h.get("folder"),
-                "tags": [t for t in h.get("tags") or [] if t != "clippings"],
-                "score": round(h.get("score", 0), 3),
-                "source": h.get("source"),
-                "note": f"{VAULT_REPO}/blob/main/{quote(h['path'])}",
-                "text": h.get("text", "")[:3000],
-            }
-            for h in hits
-        ],
-    }
+    results = [
+        {
+            "title": h.get("title"),
+            "section": h.get("heading") or None,
+            "folder": h.get("folder"),
+            "tags": [t for t in h.get("tags") or [] if t != "clippings"],
+            "score": round(h.get("score", 0), 3),
+            "source": h.get("source"),
+            "note": f"{VAULT_REPO}/blob/main/{quote(h['path'])}",
+            "text": h.get("text", "")[:3000],
+        }
+        for h in hits
+    ]
+    # Only successful searches are cached; every error path above returns before this.
+    with _notes_lock:
+        _notes_cache[key] = (time.monotonic() + NOTES_CACHE_SECONDS, results)
+        _notes_cache.move_to_end(key)
+        while len(_notes_cache) > NOTES_CACHE_SIZE:
+            _notes_cache.popitem(last=False)
+    return {"question": question, "results": results}
 
 
 @mcp.resource("ashar://travel.json", mime_type="application/json")
