@@ -147,13 +147,15 @@ async def check_things_done(client: Client) -> None:
 
 
 class _FakeNotes:
-    """Stands in for the Atlas collection: records the pipeline, returns one canned hit."""
+    """Stands in for the Atlas collection: records the pipeline and call count, returns one canned hit."""
 
     def __init__(self) -> None:
         self.pipeline: list = []
+        self.calls = 0
 
     def aggregate(self, pipeline: list) -> list:
         self.pipeline = pipeline
+        self.calls += 1
         return [{"path": "AI-Agents/Agents in the cloud.md", "title": "Agents in the cloud",
                  "folder": "AI-Agents", "heading": "Setup", "source": "https://example.com/a",
                  "tags": ["clippings", "agents"], "text": "Run coding agents remotely.", "score": 0.91234}]
@@ -179,6 +181,9 @@ async def check_ask_notes(client: Client) -> str:
     assert notes["results"] == [] and "MONGODB_URI is not set" in notes["error"], notes
 
     real_notes = server._notes
+    real_per_minute = server.NOTES_CALLS_PER_MINUTE
+    server._notes_cache.clear()
+    server._notes_calls.clear()
     try:
         # A malformed URI fails while building the client; that must come back as an error field.
         os.environ["MONGODB_URI"] = "mongodb://"
@@ -212,9 +217,41 @@ async def check_ask_notes(client: Client) -> str:
             assert notes["results"] == [] and needle in notes["error"], (args, notes)
         assert fake.pipeline == [], fake.pipeline
 
-        # Database errors keep their class name but not their message (host names, server documents).
         from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 
+        # A repeat (after trimming, case and spacing) comes from the cache; another folder or limit searches again.
+        server._notes_cache.clear()
+        fake.calls = 0
+        for args in [
+            {"question": "coding agents"},
+            {"question": " Coding  AGENTS "},
+            {"question": "coding agents", "folder": "Reading"},
+            {"question": "coding agents", "limit": 2},
+        ]:
+            notes = await call(client, "ask_notes", args)
+            assert notes["results"] and notes["question"] == args["question"].strip(), (args, notes)
+        assert fake.calls == 3, fake.calls
+
+        # Errors are never cached: once Atlas recovers, the same question searches again.
+        server._notes = lambda: _RaisingNotes(OperationFailure("rate limited"))
+        notes = await call(client, "ask_notes", {"question": "agent sandboxes"})
+        assert notes["results"] == [] and "failed (OperationFailure)" in notes["error"], notes
+        server._notes = lambda: fake
+        notes = await call(client, "ask_notes", {"question": "agent sandboxes"})
+        assert notes["results"] and fake.calls == 4, (fake.calls, notes)
+
+        # Past the per-minute limit an uncached question is turned away without a search; cached ones still answer.
+        server.NOTES_CALLS_PER_MINUTE = len(server._notes_calls)
+        notes = await call(client, "ask_notes", {"question": "something new"})
+        assert notes == {"error": "Notes search is busy. Try again in a minute.", "results": []}, notes
+        assert fake.calls == 4, fake.calls
+        notes = await call(client, "ask_notes", {"question": "coding agents"})
+        assert notes["results"] and fake.calls == 4, (fake.calls, notes)
+        server.NOTES_CALLS_PER_MINUTE = real_per_minute
+        server._notes_cache.clear()
+        server._notes_calls.clear()
+
+        # Database errors keep their class name but not their message (host names, server documents).
         for exc, needle in [
             (ServerSelectionTimeoutError("cluster0-shard-00-00.abc.mongodb.net:27017: timed out"), "timed out (ServerSelectionTimeoutError)"),
             (OperationFailure("index not found", 291, {"errmsg": "secret", "host": "cluster0.abc.mongodb.net"}), "failed (OperationFailure)"),
@@ -227,7 +264,11 @@ async def check_ask_notes(client: Client) -> str:
         os.environ.pop("MONGODB_URI", None)
         server._notes = real_notes
         server._notes_client = None
-    return "ask_notes ran (unconfigured, bad URI, input checks, hidden error text and query shape against a fake collection)"
+        server.NOTES_CALLS_PER_MINUTE = real_per_minute
+        server._notes_cache.clear()
+        server._notes_calls.clear()
+    return ("ask_notes ran (unconfigured, bad URI, input checks, cache, rate limit, hidden error text "
+            "and query shape against a fake collection)")
 
 
 async def main() -> None:
